@@ -23,6 +23,7 @@
 #include <absl/algorithm/container.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -76,6 +77,111 @@ inline bool Reaches(const Gap& gap, PosAttr::value_t from,
                     PosAttr::value_t to) noexcept {
   return gap.hi == pos_limits::kOpenGap ||
          static_cast<uint64_t>(from) + gap.hi >= to;
+}
+
+inline constexpr auto kReciprocal = [] {
+  std::array<double, 257> table{};
+  for (size_t i = 1; i != table.size(); ++i) {
+    table[i] = 1.0 / static_cast<double>(i);
+  }
+  return table;
+}();
+
+inline double Reciprocal(int64_t extra) noexcept {
+  const auto index = static_cast<size_t>(
+    std::min<int64_t>(extra, static_cast<int64_t>(kReciprocal.size()) - 1));
+  double value = kReciprocal[index];
+  if (static_cast<size_t>(extra) >= kReciprocal.size()) [[unlikely]] {
+    value = 1.0 / static_cast<double>(extra);
+  }
+  return value;
+}
+
+struct Decoded {
+  std::span<const PosAttr::value_t> positions;
+  const score_t* boosts;
+};
+
+struct Buffers {
+  std::array<std::vector<PosAttr::value_t>, 2> positions;
+  std::array<std::vector<score_t>, 2> boosts;
+};
+
+template<bool HasBoost, bool EarlyExit, typename Source, typename Collect>
+Result MatchPair(Source& source, const Gap& last, Collect&& collect) {
+  const auto first = source.Read(0);
+  const auto second = source.Read(1);
+  const auto* const p0 = first.positions.data();
+  const auto* const p1 = second.positions.data();
+  const auto a = static_cast<uint32_t>(first.positions.size());
+  const auto b = static_cast<uint32_t>(second.positions.size());
+  const uint64_t lo = last.lo;
+  const uint64_t hi = last.hi;
+  uint64_t freq = 0;
+  double weight = 0.0;
+  score_t boost = 0.f;
+  uint64_t last_start = pos_limits::invalid();
+  uint64_t pred = pos_limits::invalid();
+  [[maybe_unused]] score_t pred_boost = 0.f;
+  uint32_t i = 0;
+  uint32_t j = 0;
+  while (j != b && p1[j] < lo) {
+    ++j;
+  }
+  while (i != a && j != b) {
+    const uint64_t x = p1[j] - lo;
+    const bool adv = p0[i] <= x;
+    pred = adv ? p0[i] : pred;
+    if constexpr (HasBoost) {
+      pred_boost = adv ? first.boosts[i] : pred_boost;
+    }
+    const bool take = !adv & (pred + hi >= x + lo) & (pred > last_start);
+    const uint64_t extra = x - pred + 1;
+    const auto index = std::min<uint64_t>(extra, kReciprocal.size() - 1);
+    double value = kReciprocal[index & -uint64_t{take}];
+    if ((extra >= kReciprocal.size()) & take) [[unlikely]] {
+      value = 1.0 / static_cast<double>(extra);
+    }
+    freq += take;
+    weight += value;
+    last_start = take ? pred : last_start;
+    if constexpr (HasBoost) {
+      boost =
+        take ? std::max(boost, std::min(pred_boost, second.boosts[j])) : boost;
+    }
+    if (take) {
+      collect(static_cast<PosAttr::value_t>(pred),
+              static_cast<PosAttr::value_t>(x + lo), 0u, 0u);
+    }
+    if constexpr (EarlyExit) {
+      if (take) {
+        break;
+      }
+    }
+    i += adv;
+    j += !adv;
+  }
+  if (!EarlyExit || freq == 0) {
+    for (; j != b; ++j) {
+      const uint64_t e = p1[j];
+      if (pred + hi >= e && pred > last_start) {
+        ++freq;
+        weight += Reciprocal(static_cast<int64_t>(e - lo - pred) + 1);
+        if constexpr (HasBoost) {
+          boost = std::max(boost, std::min(pred_boost, second.boosts[j]));
+        }
+        collect(static_cast<PosAttr::value_t>(pred),
+                static_cast<PosAttr::value_t>(e), 0u, 0u);
+        break;
+      }
+    }
+  }
+  Result res;
+  res.freq = freq;
+  res.weight = weight;
+  res.boost = boost;
+  res.any = freq != 0;
+  return res;
 }
 
 template<typename Source, bool Offs, bool HasBoost>
@@ -196,27 +302,35 @@ Result Match(Source& source, std::span<const Gap> gaps,
   };
 
   if (n == 2) {
-    Entry pred;
-    bool has = false;
-    auto cur = source.Next(0);
-    for (auto e = source.Next(1); !pos_limits::eof(e); e = source.Next(1)) {
-      if (e < last.lo) {
-        continue;
+    if constexpr (!Offs) {
+      SDB_ASSERT(min_extent == 1 + last.lo);
+      if (early_exit) {
+        return MatchPair<HasBoost, true>(source, last,
+                                         std::forward<Collect>(collect));
       }
-      const auto x = e - last.lo;
-      for (; !pos_limits::eof(cur) && cur <= x; cur = source.Next(0)) {
-        pred.pos = cur;
-        pred.start = cur;
-        if constexpr (Offs) {
+      return MatchPair<HasBoost, false>(source, last,
+                                        std::forward<Collect>(collect));
+    } else {
+      Entry pred;
+      bool has = false;
+      auto cur = source.Next(0);
+      for (auto e = source.Next(1); !pos_limits::eof(e); e = source.Next(1)) {
+        if (e < last.lo) {
+          continue;
+        }
+        const auto x = e - last.lo;
+        for (; !pos_limits::eof(cur) && cur <= x; cur = source.Next(0)) {
+          pred.pos = cur;
+          pred.start = cur;
           pred.start_offset = source.StartOffset(0);
+          if constexpr (HasBoost) {
+            pred.boost = source.Boost(0);
+          }
+          has = true;
         }
-        if constexpr (HasBoost) {
-          pred.boost = source.Boost(0);
+        if (has && Reaches(last, pred.pos, e) && emit(pred, e)) {
+          break;
         }
-        has = true;
-      }
-      if (has && Reaches(last, pred.pos, e) && emit(pred, e)) {
-        break;
       }
     }
   } else {
@@ -262,6 +376,12 @@ class VectorSource {
       ++next;
     }
     return next < slot.size() ? slot[next++] : pos_limits::eof();
+  }
+
+  Decoded Read(size_t i) {
+    const auto& slot = _slots[i];
+    _next[i] = slot.size();
+    return {.positions = {slot.data(), slot.size()}, .boosts = nullptr};
   }
 
   uint32_t StartOffset(size_t) const noexcept { return 0; }
@@ -310,7 +430,7 @@ class IterSource {
  public:
   using Traits = TermPositionTraits<typename Positions::value_type>;
 
-  explicit IterSource(Positions& pos) : _pos{pos} {}
+  IterSource(Positions& pos, Buffers& buffers) : _pos{pos}, _buffers{buffers} {}
 
   PosAttr::value_t Next(size_t i) {
     auto& it = *_pos[i].first;
@@ -319,6 +439,28 @@ class IterSource {
 
   PosAttr::value_t Seek(size_t i, PosAttr::value_t target) {
     return _pos[i].first->seek(target);
+  }
+
+  Decoded Read(size_t i)
+    requires(!Offs)
+  {
+    SDB_ASSERT(i < _buffers.positions.size());
+    auto& slot = _pos[i];
+    const size_t capacity = slot.first->DocFreq();
+    auto& positions = _buffers.positions[i];
+    if (positions.size() < capacity) {
+      positions.resize(capacity);
+    }
+    score_t* boosts = nullptr;
+    if constexpr (HasBoost) {
+      auto& slot_boosts = _buffers.boosts[i];
+      if (slot_boosts.size() < capacity) {
+        slot_boosts.resize(capacity);
+      }
+      boosts = slot_boosts.data();
+    }
+    const auto count = Traits::Read(slot, positions.data(), boosts);
+    return {.positions = {positions.data(), count}, .boosts = boosts};
   }
 
   uint32_t StartOffset(size_t i) const noexcept
@@ -343,6 +485,7 @@ class IterSource {
 
  private:
   Positions& _pos;
+  Buffers& _buffers;
 };
 
 }  // namespace detail::ordered
@@ -390,7 +533,8 @@ class PhraseOrderedMatcher {
       _matches.clear();
       _match_idx = 0;
     }
-    detail::ordered::IterSource<Positions, Offs, HasBoost> source{_pos};
+    detail::ordered::IterSource<Positions, Offs, HasBoost> source{_pos,
+                                                                  _buffers};
     const auto res = detail::ordered::Match<Offs, HasBoost>(
       source, {_gaps.data(), _gaps.size()}, _min_extent, !HasFreq, _levels,
       [&]([[maybe_unused]] PosAttr::value_t start,
@@ -483,6 +627,7 @@ class PhraseOrderedMatcher {
   containers::Fixed<detail::ordered::Gap, N> _gaps;
   PosAttr::value_t _min_extent = 1;
   std::vector<detail::ordered::Level> _levels;
+  detail::ordered::Buffers _buffers;
   std::vector<detail::ordered::SpanOffsets> _matches;
   size_t _match_idx = 0;
 
