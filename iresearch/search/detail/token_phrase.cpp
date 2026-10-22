@@ -401,53 +401,58 @@ uint64_t PhraseCheck::AnchorMatch::Scan(uint32_t slot, size_t at,
 
 void PhraseCheck::AutomatonMatch::Feed(const TokenBatch& batch, uint32_t from,
                                        State& state) {
+  const auto& phrase = *state.phrase;
+  const auto& layout = *phrase.automaton;
+  auto bits = _bits;
+  auto mask = _mask;
+  auto at = _at;
   for (auto i = from; i != batch.count; ++i) {
     const auto pos = batch.pos[i];
-    if (pos != _at) {
-      Flush(state);
-      if (state.done) {
-        return;
-      }
-      if (_at != 0) {
-        for (auto gap = _at + 1; gap < pos && _bits != 0; ++gap) {
-          Step(0, state);
+    if (pos != at) {
+      if (at != 0 && (bits != 0 || mask != 0)) {
+        bits = Step(layout, bits, mask);
+        if (bits & layout.last) {
+          state.freq = 1;
+          state.done = true;
+          break;
+        }
+        for (auto gap = at + 1; gap < pos && bits != 0; ++gap) {
+          bits = Step(layout, bits, 0);
         }
       }
-      _at = pos;
+      mask = 0;
+      at = pos;
     }
-    _mask |= MaskOf(*state.phrase, batch.terms[i]);
+    mask |= MaskOf(phrase, batch.terms[i]);
   }
+  _bits = bits;
+  _mask = mask;
+  _at = at;
 }
 
 PhraseVerdict PhraseCheck::AutomatonMatch::Finish(State& state) {
-  if (!state.done) {
-    Flush(state);
+  const auto& layout = *state.phrase->automaton;
+  if (!state.done && _at != 0 && (_bits != 0 || _mask != 0)) {
+    _bits = Step(layout, _bits, _mask);
+    _mask = 0;
+    if (_bits & layout.last) {
+      state.freq = 1;
+      state.done = true;
+    }
   }
   return Verdict(state);
 }
 
-void PhraseCheck::AutomatonMatch::Flush(State& state) {
-  if (_at == 0 || (_bits == 0 && _mask == 0)) {
-    _mask = 0;
-    return;
-  }
-  Step(_mask, state);
-  _mask = 0;
-}
-
-void PhraseCheck::AutomatonMatch::Step(uint64_t mask, State& state) {
-  const auto& layout = *state.phrase->automaton;
-  auto next = ((_bits << 1) | 1) & (mask | layout.wild);
+uint64_t PhraseCheck::AutomatonMatch::Step(
+  const CompiledPhrase::Automaton& layout, uint64_t bits,
+  uint64_t mask) noexcept {
+  auto next = ((bits << 1) | 1) & (mask | layout.wild);
   for (const auto& extra : layout.extras) {
-    if (_bits & extra.range) {
+    if (bits & extra.range) {
       next |= extra.bit & mask;
     }
   }
-  _bits = next;
-  if (_bits & layout.last) {
-    state.freq = 1;
-    state.done = true;
-  }
+  return next;
 }
 
 void PhraseCheck::EarliestMatch::Resolve(State& state) {

@@ -22,6 +22,8 @@
 
 #include <absl/container/inlined_vector.h>
 
+#include <cstdint>
+#include <cstring>
 #include <duckdb/common/types/string_type.hpp>
 #include <optional>
 #include <span>
@@ -70,6 +72,14 @@ struct CompiledPhrase {
     uint64_t mask = 0;
   };
 
+  struct Sieve {
+    static constexpr size_t kBitsPerTerm = 8;
+    static constexpr size_t kMaxWords = 4096;
+
+    std::vector<uint64_t> words;
+    uint32_t shift = 0;
+  };
+
   struct Slop {
     PosAttr::value_t max = 0;
     std::vector<int64_t> offsets;
@@ -106,15 +116,40 @@ struct CompiledPhrase {
   bool open = false;
   bool plain = false;
   analysis::dict::StringMap<std::string_view, Accept> accept;
+  Sieve sieve;
   std::vector<uint32_t> pattern_slots;
   std::optional<Anchor> anchor;
   std::optional<Automaton> automaton;
 };
 
+inline uint64_t SieveHash(const duckdb::string_t& term) noexcept {
+  uint64_t head = 0;
+  std::memcpy(&head, &term, sizeof head);
+  head ^= head >> 33;
+  head *= UINT64_C(0xff51afd7ed558ccd);
+  head ^= head >> 33;
+  head *= UINT64_C(0xc4ceb9fe1a85ec53);
+  return head ^ (head >> 33);
+}
+
+inline uint64_t SieveBits(uint64_t hash) noexcept {
+  return (uint64_t{1} << (hash & 63)) | (uint64_t{1} << ((hash >> 6) & 63));
+}
+
+inline bool MayAccept(const CompiledPhrase& phrase,
+                      const duckdb::string_t& term) noexcept {
+  const auto hash = SieveHash(term);
+  const auto bits = SieveBits(hash);
+  return (phrase.sieve.words[hash >> phrase.sieve.shift] & bits) == bits;
+}
+
+inline const CompiledPhrase::Accept* FindAccepted(
+  const CompiledPhrase& phrase, const duckdb::string_t& term) noexcept {
+  return MayAccept(phrase, term) ? phrase.accept.Find(term) : nullptr;
+}
+
 bool AcceptsTerm(const CompiledPhrase& phrase, const CompiledPhrase::Slot& slot,
                  const duckdb::string_t& term);
-
-uint64_t MaskOf(const CompiledPhrase& phrase, const duckdb::string_t& term);
 
 template<typename Visitor>
 void ForEachPattern(const CompiledPhrase& phrase, const duckdb::string_t& term,
@@ -133,12 +168,23 @@ void ForEachPattern(const CompiledPhrase& phrase, const duckdb::string_t& term,
 template<typename Visitor>
 void ForEachSlot(const CompiledPhrase& phrase, const duckdb::string_t& term,
                  Visitor&& visit) {
-  if (const auto* found = phrase.accept.Find(term)) {
+  if (const auto* found = FindAccepted(phrase, term)) {
     for (const auto slot : found->slots) {
       visit(slot);
     }
   }
   ForEachPattern(phrase, term, visit);
+}
+
+inline uint64_t MaskOf(const CompiledPhrase& phrase,
+                       const duckdb::string_t& term) {
+  uint64_t mask = 0;
+  if (const auto* found = FindAccepted(phrase, term)) {
+    mask = found->mask;
+  }
+  ForEachPattern(phrase, term,
+                 [&](uint32_t slot) { mask |= phrase.slots[slot].bit; });
+  return mask;
 }
 
 template<typename Visitor>
