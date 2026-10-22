@@ -103,11 +103,22 @@ PhraseCheck::PhraseCheck(const CompiledPhrase& phrase,
               });
 }
 
-PhraseVerdict PhraseCheck::Check(duckdb::idx_t row, uint32_t anchors) {
+bool PhraseCheck::Anchored(duckdb::idx_t row, uint32_t anchors) const {
   const auto& phrase = *_state.phrase;
-  Start(phrase.anchor && !(phrase.open && _state.count) &&
-          !(_all_open && phrase.anchor->right >= pos_limits::kOpenGap),
-        anchors);
+  if (!phrase.anchor || (phrase.open && _state.count) ||
+      (_all_open && phrase.anchor->right >= pos_limits::kOpenGap)) {
+    return false;
+  }
+  if (!_state.count || anchors == 0) {
+    return true;
+  }
+  const auto window = phrase.anchor->left + phrase.anchor->right;
+  const auto tokens = _rows.Bytes(row) / kBytesPerToken;
+  return window <= (kWalkPerToken * tokens + AnchorMatch::kStepSlack) / anchors;
+}
+
+PhraseVerdict PhraseCheck::Check(duckdb::idx_t row, uint32_t anchors) {
+  Start(Anchored(row, anchors), anchors);
   Analyze(row);
   if (_route == Route::Anchor) {
     _anchor.Drain(_state);
