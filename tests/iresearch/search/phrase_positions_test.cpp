@@ -502,6 +502,76 @@ TEST(PhrasePositionsTest, interval_phrase_agrees_with_reference) {
   }
 }
 
+TEST(PhrasePositionsTest, interval_phrase_rewinds_across_position_blocks) {
+  const auto repeat = [](std::string_view pattern, size_t n) {
+    std::string text;
+    for (size_t i = 0; i != n; ++i) {
+      absl::StrAppend(&text, pattern, " ");
+    }
+    return text;
+  };
+  {
+    irs::ByPhraseOptions phrase;
+    phrase.push_back<irs::ByTermOptions>().term = Bytes("a");
+    phrase.push_back<irs::ByTermOptions>(1, 2).term = Bytes("b");
+    phrase.push_back<irs::ByTermOptions>(1, 1).term = Bytes("c");
+    const auto out = Verify(phrase, Doc{repeat("a b b c x", 150)});
+    EXPECT_TRUE(out.matched);
+    EXPECT_EQ(150U, out.freq);
+  }
+  {
+    irs::ByPhraseOptions phrase;
+    phrase.push_back<irs::ByTermOptions>().term = Bytes("a");
+    phrase.push_back<irs::ByTermOptions>(1, 3).term = Bytes("b");
+    const auto out = Verify(phrase, Doc{repeat("a b b b x", 100)});
+    EXPECT_TRUE(out.matched);
+    EXPECT_EQ(300U, out.freq);
+  }
+}
+
+TEST(PhrasePositionsTest, interval_phrase_long_documents_agree_with_reference) {
+  constexpr std::string_view kWords[] = {"a", "b", "c", "d", "x"};
+  std::mt19937 rng{20261022};
+  for (size_t round = 0; round != 24; ++round) {
+    std::array<int, std::size(kWords)> weights;
+    for (auto& weight : weights) {
+      weight = std::uniform_int_distribution{1, 6}(rng);
+    }
+    std::discrete_distribution<size_t> pick{weights.begin(), weights.end()};
+    std::vector<std::string_view> doc(
+      std::uniform_int_distribution<size_t>{300, 900}(rng));
+    for (auto& word : doc) {
+      word = kWords[pick(rng)];
+    }
+
+    std::vector<ReferenceSlot> slots(
+      std::uniform_int_distribution<size_t>{2, 4}(rng));
+    std::uniform_int_distribution<size_t> term{0, 3};
+    for (size_t s = 0; s != slots.size(); ++s) {
+      auto& slot = slots[s];
+      if (s != 0) {
+        slot.min = std::uniform_int_distribution<uint32_t>{0, 3}(rng);
+        slot.max =
+          slot.min + std::uniform_int_distribution<uint32_t>{0, 2}(rng);
+      }
+      slot.words.emplace_back(kWords[term(rng)], irs::kNoBoost);
+    }
+    WidenOneGap(slots, rng);
+
+    irs::ByPhraseOptions phrase;
+    for (size_t s = 0; s != slots.size(); ++s) {
+      Push<irs::ByTermOptions>(phrase, slots[s], s == 0).term =
+        Bytes(slots[s].words.front().first);
+    }
+
+    SCOPED_TRACE(Describe(doc, slots));
+    const auto expected = Reference(doc, slots);
+    const auto out = Verify(phrase, Doc{absl::StrJoin(doc, " ")});
+    EXPECT_EQ(expected.matched, out.matched);
+    EXPECT_EQ(expected.freq, out.freq);
+  }
+}
+
 TEST(PhrasePositionsTest, interval_phrase_scale_agrees_with_reference) {
   constexpr std::string_view kWords[] = {"a",   "c",     "golf", "gold",
                                          "gol", "golfs", "x"};
