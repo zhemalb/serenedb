@@ -36,6 +36,31 @@ class RowValues {
 
   template<typename Visitor>
   void ForEach(duckdb::idx_t row, Visitor&& visit) {
+    ForEachStored(row, [&](duckdb::string_t value) {
+      if (!_json) {
+        return visit(value);
+      }
+      const auto leaf = _reader.Read({value.GetData(), value.GetSize()});
+      if (leaf.kind != JsonLeafKind::String) {
+        return true;
+      }
+      return visit(duckdb::string_t{leaf.string.data(),
+                                    static_cast<uint32_t>(leaf.string.size())});
+    });
+  }
+
+  uint64_t Bytes(duckdb::idx_t row) const {
+    uint64_t bytes = 0;
+    ForEachStored(row, [&](duckdb::string_t value) {
+      bytes += value.GetSize();
+      return true;
+    });
+    return bytes;
+  }
+
+ private:
+  template<typename Visitor>
+  void ForEachStored(duckdb::idx_t row, Visitor&& visit) const {
     const auto idx = _format.sel->get_index(row);
     if (!_format.validity.RowIsValid(idx)) {
       return;
@@ -58,20 +83,9 @@ class RowValues {
       children(idx * _array_size, _array_size);
       return;
     }
-    const auto value =
-      duckdb::UnifiedVectorFormat::GetData<duckdb::string_t>(_format)[idx];
-    if (!_json) {
-      visit(value);
-      return;
-    }
-    const auto leaf = _reader.Read({value.GetData(), value.GetSize()});
-    if (leaf.kind == JsonLeafKind::String) {
-      visit(duckdb::string_t{leaf.string.data(),
-                             static_cast<uint32_t>(leaf.string.size())});
-    }
+    visit(duckdb::UnifiedVectorFormat::GetData<duckdb::string_t>(_format)[idx]);
   }
 
- private:
   duckdb::UnifiedVectorFormat _format;
   duckdb::UnifiedVectorFormat _children;
   duckdb::LogicalTypeId _type = duckdb::LogicalTypeId::VARCHAR;
