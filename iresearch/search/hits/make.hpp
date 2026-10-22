@@ -82,6 +82,8 @@ Root::ptr MakeAll(const SubReader& segment, const Context& ctx, score_t score);
 Root::ptr MakeFixedPhrase(const FixedPhraseQuery& query, const Context& ctx);
 Root::ptr MakeFixedPhraseIntervals(const FixedPhraseQuery& query,
                                    const Context& ctx);
+Root::ptr MakeFixedPhraseOrdered(const FixedPhraseQuery& query,
+                                 const Context& ctx);
 Root::ptr MakeFixedPhraseSlop(const FixedPhraseQuery& query,
                               const Context& ctx);
 
@@ -89,6 +91,8 @@ Root::ptr MakeVariadicPhrase(const VariadicPhraseQuery& query,
                              const Context& ctx);
 Root::ptr MakeVariadicPhraseIntervals(const VariadicPhraseQuery& query,
                                       const Context& ctx);
+Root::ptr MakeVariadicPhraseOrdered(const VariadicPhraseQuery& query,
+                                    const Context& ctx);
 Root::ptr MakeVariadicPhraseSlop(const VariadicPhraseQuery& query,
                                  const Context& ctx);
 

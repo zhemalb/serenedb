@@ -108,6 +108,7 @@ Root::ptr Make(const FixedPhraseQuery& query, const Context& ctx) {
   }
   return irs::detail::ResolveMatch(
     query, [&] { return MakeFixedPhraseSlop(query, ctx); },
+    [&] { return MakeFixedPhraseOrdered(query, ctx); },
     [&] { return MakeFixedPhraseIntervals(query, ctx); },
     [&] { return MakeFixedPhrase(query, ctx); });
 }
@@ -118,6 +119,7 @@ Root::ptr Make(const VariadicPhraseQuery& query, const Context& ctx) {
   }
   return irs::detail::ResolveMatch(
     query, [&] { return MakeVariadicPhraseSlop(query, ctx); },
+    [&] { return MakeVariadicPhraseOrdered(query, ctx); },
     [&] { return MakeVariadicPhraseIntervals(query, ctx); },
     [&] { return MakeVariadicPhrase(query, ctx); });
 }

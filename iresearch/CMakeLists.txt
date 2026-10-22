@@ -144,9 +144,11 @@ set(IResearch_core_sources
     ./search/count/make_subtract_disjunction.cpp
     ./search/count/make_fixed_phrase.cpp
     ./search/count/make_fixed_phrase_intervals.cpp
+    ./search/count/make_fixed_phrase_ordered.cpp
     ./search/count/make_fixed_phrase_slop.cpp
     ./search/count/make_variadic_phrase.cpp
     ./search/count/make_variadic_phrase_intervals.cpp
+    ./search/count/make_variadic_phrase_ordered.cpp
     ./search/count/make_variadic_phrase_slop.cpp
     ./search/count/make_ngram.cpp
     ./search/count/make_ngram_all.cpp
@@ -172,13 +174,17 @@ set(IResearch_core_sources
     ./search/lead/make_fixed_phrase_docs.cpp
     ./search/lead/make_fixed_phrase_scored.cpp
     ./search/lead/make_fixed_phrase_intervals_docs.cpp
+    ./search/lead/make_fixed_phrase_ordered_docs.cpp
     ./search/lead/make_fixed_phrase_intervals_scored.cpp
+    ./search/lead/make_fixed_phrase_ordered_scored.cpp
     ./search/lead/make_fixed_phrase_slop_docs.cpp
     ./search/lead/make_fixed_phrase_slop_scored.cpp
     ./search/lead/make_variadic_phrase_docs.cpp
     ./search/lead/make_variadic_phrase_scored.cpp
     ./search/lead/make_variadic_phrase_intervals_docs.cpp
+    ./search/lead/make_variadic_phrase_ordered_docs.cpp
     ./search/lead/make_variadic_phrase_intervals_scored.cpp
+    ./search/lead/make_variadic_phrase_ordered_scored.cpp
     ./search/lead/make_variadic_phrase_slop_docs.cpp
     ./search/lead/make_variadic_phrase_slop_scored.cpp
     ./search/lead/make_ngram_docs.cpp
@@ -200,9 +206,11 @@ set(IResearch_core_sources
     ./search/offsets/make_posting.cpp
     ./search/offsets/make_fixed_phrase.cpp
     ./search/offsets/make_fixed_phrase_intervals.cpp
+    ./search/offsets/make_fixed_phrase_ordered.cpp
     ./search/offsets/make_fixed_phrase_slop.cpp
     ./search/offsets/make_variadic_phrase.cpp
     ./search/offsets/make_variadic_phrase_intervals.cpp
+    ./search/offsets/make_variadic_phrase_ordered.cpp
     ./search/offsets/make_variadic_phrase_slop.cpp
     ./search/offsets/make_ngram.cpp
     ./search/offsets/make_ngram_all.cpp
@@ -221,13 +229,17 @@ set(IResearch_core_sources
     ./search/probe/make_fixed_phrase_docs.cpp
     ./search/probe/make_fixed_phrase_scored.cpp
     ./search/probe/make_fixed_phrase_intervals_docs.cpp
+    ./search/probe/make_fixed_phrase_ordered_docs.cpp
     ./search/probe/make_fixed_phrase_intervals_scored.cpp
+    ./search/probe/make_fixed_phrase_ordered_scored.cpp
     ./search/probe/make_fixed_phrase_slop_docs.cpp
     ./search/probe/make_fixed_phrase_slop_scored.cpp
     ./search/probe/make_variadic_phrase_docs.cpp
     ./search/probe/make_variadic_phrase_scored.cpp
     ./search/probe/make_variadic_phrase_intervals_docs.cpp
+    ./search/probe/make_variadic_phrase_ordered_docs.cpp
     ./search/probe/make_variadic_phrase_intervals_scored.cpp
+    ./search/probe/make_variadic_phrase_ordered_scored.cpp
     ./search/probe/make_variadic_phrase_slop_docs.cpp
     ./search/probe/make_variadic_phrase_slop_scored.cpp
     ./search/probe/make_ngram_docs.cpp
@@ -261,13 +273,17 @@ set(IResearch_core_sources
     ./search/fill/make_fixed_phrase_docs.cpp
     ./search/fill/make_fixed_phrase_scored.cpp
     ./search/fill/make_fixed_phrase_intervals_docs.cpp
+    ./search/fill/make_fixed_phrase_ordered_docs.cpp
     ./search/fill/make_fixed_phrase_intervals_scored.cpp
+    ./search/fill/make_fixed_phrase_ordered_scored.cpp
     ./search/fill/make_fixed_phrase_slop_docs.cpp
     ./search/fill/make_fixed_phrase_slop_scored.cpp
     ./search/fill/make_variadic_phrase_docs.cpp
     ./search/fill/make_variadic_phrase_scored.cpp
     ./search/fill/make_variadic_phrase_intervals_docs.cpp
+    ./search/fill/make_variadic_phrase_ordered_docs.cpp
     ./search/fill/make_variadic_phrase_intervals_scored.cpp
+    ./search/fill/make_variadic_phrase_ordered_scored.cpp
     ./search/fill/make_variadic_phrase_slop_docs.cpp
     ./search/fill/make_variadic_phrase_slop_scored.cpp
     ./search/fill/make_ngram_docs.cpp
@@ -298,9 +314,11 @@ set(IResearch_core_sources
     ./search/docs/make_boolean_negation.cpp
     ./search/docs/make_fixed_phrase.cpp
     ./search/docs/make_fixed_phrase_intervals.cpp
+    ./search/docs/make_fixed_phrase_ordered.cpp
     ./search/docs/make_fixed_phrase_slop.cpp
     ./search/docs/make_variadic_phrase.cpp
     ./search/docs/make_variadic_phrase_intervals.cpp
+    ./search/docs/make_variadic_phrase_ordered.cpp
     ./search/docs/make_variadic_phrase_slop.cpp
     ./search/docs/make_ngram.cpp
     ./search/docs/make_ngram_all.cpp
@@ -323,9 +341,11 @@ set(IResearch_core_sources
     ./search/hits/make_boosted_posting.cpp
     ./search/hits/make_fixed_phrase.cpp
     ./search/hits/make_fixed_phrase_intervals.cpp
+    ./search/hits/make_fixed_phrase_ordered.cpp
     ./search/hits/make_fixed_phrase_slop.cpp
     ./search/hits/make_variadic_phrase.cpp
     ./search/hits/make_variadic_phrase_intervals.cpp
+    ./search/hits/make_variadic_phrase_ordered.cpp
     ./search/hits/make_variadic_phrase_slop.cpp
     ./search/hits/make_ngram.cpp
     ./search/hits/make_ngram_all.cpp
@@ -347,9 +367,11 @@ set(IResearch_core_sources
     ./search/top/make_boolean_exclusion_window.cpp
     ./search/top/make_fixed_phrase.cpp
     ./search/top/make_fixed_phrase_intervals.cpp
+    ./search/top/make_fixed_phrase_ordered.cpp
     ./search/top/make_fixed_phrase_slop.cpp
     ./search/top/make_variadic_phrase.cpp
     ./search/top/make_variadic_phrase_intervals.cpp
+    ./search/top/make_variadic_phrase_ordered.cpp
     ./search/top/make_variadic_phrase_slop.cpp
     ./search/top/make_ngram.cpp
     ./search/top/make_ngram_all.cpp
@@ -362,6 +384,7 @@ set(IResearch_core_sources
     ./search/top/make_pruned_posting.cpp
     ./search/top/make_fixed_phrase_pruned.cpp
     ./search/top/make_fixed_phrase_intervals_pruned.cpp
+    ./search/top/make_fixed_phrase_ordered_pruned.cpp
     ./search/top/make_pruned_disjunction.cpp
     ./search/top/make_pruned_conjunction.cpp
     ./search/top/make_pruned_conjunction_nested.cpp

@@ -95,21 +95,27 @@ Node::ptr MakeSparseConjunctionScored(
 
 Node::ptr MakeFixedPhraseDocs(const FixedPhraseQuery& query);
 Node::ptr MakeFixedPhraseIntervalsDocs(const FixedPhraseQuery& query);
+Node::ptr MakeFixedPhraseOrderedDocs(const FixedPhraseQuery& query);
 Node::ptr MakeFixedPhraseSlopDocs(const FixedPhraseQuery& query);
 Node::ptr MakeVariadicPhraseDocs(const VariadicPhraseQuery& query);
 Node::ptr MakeVariadicPhraseIntervalsDocs(const VariadicPhraseQuery& query);
+Node::ptr MakeVariadicPhraseOrderedDocs(const VariadicPhraseQuery& query);
 Node::ptr MakeVariadicPhraseSlopDocs(const VariadicPhraseQuery& query);
 
 Node::ptr MakeFixedPhraseScored(const FixedPhraseQuery& query,
                                 const detail::ScoreArgs& args);
 Node::ptr MakeFixedPhraseIntervalsScored(const FixedPhraseQuery& query,
                                          const detail::ScoreArgs& args);
+Node::ptr MakeFixedPhraseOrderedScored(const FixedPhraseQuery& query,
+                                       const detail::ScoreArgs& args);
 Node::ptr MakeFixedPhraseSlopScored(const FixedPhraseQuery& query,
                                     const detail::ScoreArgs& args);
 Node::ptr MakeVariadicPhraseScored(const VariadicPhraseQuery& query,
                                    const detail::ScoreArgs& args);
 Node::ptr MakeVariadicPhraseIntervalsScored(const VariadicPhraseQuery& query,
                                             const detail::ScoreArgs& args);
+Node::ptr MakeVariadicPhraseOrderedScored(const VariadicPhraseQuery& query,
+                                          const detail::ScoreArgs& args);
 Node::ptr MakeVariadicPhraseSlopScored(const VariadicPhraseQuery& query,
                                        const detail::ScoreArgs& args);
 

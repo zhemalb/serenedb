@@ -31,6 +31,7 @@
 #include "iresearch/search/detail/collect.hpp"
 #include "iresearch/search/detail/node_of.hpp"
 #include "iresearch/search/detail/phrase_fixed_slots.hpp"
+#include "iresearch/search/detail/phrase_ordered_matcher.hpp"
 #include "iresearch/search/detail/phrase_slop_matcher.hpp"
 #include "iresearch/search/detail/phrase_variadic_slots.hpp"
 #include "iresearch/search/detail/plan.hpp"
@@ -46,6 +47,7 @@ enum class PhraseMatch : uint8_t {
   Plain,
   Intervals,
   Slop,
+  Ordered,
 };
 
 template<typename Query>
@@ -53,15 +55,21 @@ PhraseMatch MatchOf(const Query& query) noexcept {
   if (query.slop != 0) {
     return PhraseMatch::Slop;
   }
+  if (query.has_open) {
+    return PhraseMatch::Ordered;
+  }
   return query.has_intervals ? PhraseMatch::Intervals : PhraseMatch::Plain;
 }
 
-template<typename Query, typename Slop, typename Intervals, typename Plain>
-auto ResolveMatch(const Query& query, Slop&& slop, Intervals&& intervals,
-                  Plain&& plain) {
+template<typename Query, typename Slop, typename Ordered, typename Intervals,
+         typename Plain>
+auto ResolveMatch(const Query& query, Slop&& slop, Ordered&& ordered,
+                  Intervals&& intervals, Plain&& plain) {
   switch (MatchOf(query)) {
     case PhraseMatch::Slop:
       return slop();
+    case PhraseMatch::Ordered:
+      return ordered();
     case PhraseMatch::Intervals:
       return intervals();
     case PhraseMatch::Plain:
@@ -80,6 +88,9 @@ auto ResolveSlotMatcherOf(const Query& query, F&& f) {
     return f.template
     operator()<PhraseSlopMatcher<Slot, Offs, HasFreq, 0, HasBoost>, Leaf>(
       query.slop, BuildExpectedSteps(query.positions));
+  } else if constexpr (M == PhraseMatch::Ordered) {
+    return f.template
+    operator()<PhraseOrderedMatcher<Slot, Offs, HasFreq, 0, HasBoost>, Leaf>();
   } else {
     static constexpr bool kIntervals = M == PhraseMatch::Intervals;
     return f.template operator()<
@@ -93,6 +104,8 @@ auto ResolveMatcherOf(const Query& query, F&& f) {
   if constexpr (M == PhraseMatch::Slop) {
     return f.template operator()<FixedPhraseSlopMatcher<Offs, HasFreq, N>>(
       query.slop, BuildExpectedSteps(query.positions));
+  } else if constexpr (M == PhraseMatch::Ordered) {
+    return f.template operator()<FixedPhraseOrderedMatcher<Offs, HasFreq, N>>();
   } else {
     static constexpr bool kIntervals = M == PhraseMatch::Intervals;
     return f
@@ -193,6 +206,9 @@ Result MakeFixedPhrase(const FixedPhraseQuery& query, Prefix&&... prefix) {
     case PhraseMatch::Slop:
       return MakeFixedPhraseOf<PhraseMatch::Slop, Impl, Result, Scored, Wrap>(
         query, std::forward<Prefix>(prefix)...);
+    case PhraseMatch::Ordered:
+      return MakeFixedPhraseOf<PhraseMatch::Ordered, Impl, Result, Scored,
+                               Wrap>(query, std::forward<Prefix>(prefix)...);
     case PhraseMatch::Intervals:
       return MakeFixedPhraseOf<PhraseMatch::Intervals, Impl, Result, Scored,
                                Wrap>(query, std::forward<Prefix>(prefix)...);
@@ -210,6 +226,9 @@ Result MakeVariadicPhrase(const VariadicPhraseQuery& query,
   switch (MatchOf(query)) {
     case PhraseMatch::Slop:
       return MakeVariadicPhraseOf<PhraseMatch::Slop, Impl, Result, Scored,
+                                  Wrap>(query, std::forward<Prefix>(prefix)...);
+    case PhraseMatch::Ordered:
+      return MakeVariadicPhraseOf<PhraseMatch::Ordered, Impl, Result, Scored,
                                   Wrap>(query, std::forward<Prefix>(prefix)...);
     case PhraseMatch::Intervals:
       return MakeVariadicPhraseOf<PhraseMatch::Intervals, Impl, Result, Scored,

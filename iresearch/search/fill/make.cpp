@@ -108,6 +108,7 @@ Node::ptr Make(const MultiTermQuery& query, const detail::ScoredCtx& ctx,
 Node::ptr Make(const FixedPhraseQuery& query) {
   return detail::ResolveMatch(
     query, [&] { return MakeFixedPhraseSlopDocs(query); },
+    [&] { return MakeFixedPhraseOrderedDocs(query); },
     [&] { return MakeFixedPhraseIntervalsDocs(query); },
     [&] { return MakeFixedPhraseDocs(query); });
 }
@@ -119,6 +120,7 @@ Node::ptr Make(const FixedPhraseQuery& query, const detail::ScoredCtx& ctx,
   }
   return detail::ResolveMatch(
     query, [&] { return MakeFixedPhraseSlopScored(query, ctx, merge); },
+    [&] { return MakeFixedPhraseOrderedScored(query, ctx, merge); },
     [&] { return MakeFixedPhraseIntervalsScored(query, ctx, merge); },
     [&] { return MakeFixedPhraseScored(query, ctx, merge); });
 }
@@ -126,6 +128,7 @@ Node::ptr Make(const FixedPhraseQuery& query, const detail::ScoredCtx& ctx,
 Node::ptr Make(const VariadicPhraseQuery& query) {
   return detail::ResolveMatch(
     query, [&] { return MakeVariadicPhraseSlopDocs(query); },
+    [&] { return MakeVariadicPhraseOrderedDocs(query); },
     [&] { return MakeVariadicPhraseIntervalsDocs(query); },
     [&] { return MakeVariadicPhraseDocs(query); });
 }
@@ -137,6 +140,7 @@ Node::ptr Make(const VariadicPhraseQuery& query, const detail::ScoredCtx& ctx,
   }
   return detail::ResolveMatch(
     query, [&] { return MakeVariadicPhraseSlopScored(query, ctx, merge); },
+    [&] { return MakeVariadicPhraseOrderedScored(query, ctx, merge); },
     [&] { return MakeVariadicPhraseIntervalsScored(query, ctx, merge); },
     [&] { return MakeVariadicPhraseScored(query, ctx, merge); });
 }

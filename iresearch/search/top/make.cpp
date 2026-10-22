@@ -137,6 +137,14 @@ Root::ptr Make(const FixedPhraseQuery& query, const Context& ctx) {
   if (match == irs::detail::PhraseMatch::Slop) {
     return MakeFixedPhraseSlop(query, ctx);
   }
+  if (match == irs::detail::PhraseMatch::Ordered) {
+    if (ctx.prune) {
+      if (auto pruned = MakeFixedPhraseOrderedPruned(query, ctx)) {
+        return pruned;
+      }
+    }
+    return MakeFixedPhraseOrdered(query, ctx);
+  }
   const auto intervals = match == irs::detail::PhraseMatch::Intervals;
   if (ctx.prune) {
     if (auto pruned = intervals ? MakeFixedPhraseIntervalsPruned(query, ctx)
@@ -154,6 +162,7 @@ Root::ptr Make(const VariadicPhraseQuery& query, const Context& ctx) {
   }
   return irs::detail::ResolveMatch(
     query, [&] { return MakeVariadicPhraseSlop(query, ctx); },
+    [&] { return MakeVariadicPhraseOrdered(query, ctx); },
     [&] { return MakeVariadicPhraseIntervals(query, ctx); },
     [&] { return MakeVariadicPhrase(query, ctx); });
 }
