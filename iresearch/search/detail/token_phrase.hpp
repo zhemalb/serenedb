@@ -79,6 +79,9 @@ class PhraseCheck final : public TokenConsumer {
 
   class AnchorMatch {
    public:
+    static constexpr uint64_t kStepsPerToken = 4;
+    static constexpr uint64_t kStepSlack = 256;
+
     explicit AnchorMatch(const TokenBatch& batch) noexcept
       : _batch_terms{batch.terms}, _batch_pos{batch.pos} {}
 
@@ -90,9 +93,6 @@ class PhraseCheck final : public TokenConsumer {
     PhraseVerdict Finish(const State& state) const;
 
    private:
-    static constexpr uint64_t kStepsPerToken = 4;
-    static constexpr uint64_t kStepSlack = 256;
-
     uint32_t PosAt(size_t at) const noexcept {
       SDB_ASSERT(at >= _carry_base && at < _end);
       return at < _batch_base ? _carry_pos[at - _carry_base]
@@ -194,6 +194,10 @@ class PhraseCheck final : public TokenConsumer {
     std::unreachable();
   }
 
+  static constexpr uint64_t kBytesPerToken = 4;
+  static constexpr uint64_t kWalkPerToken = 2;
+
+  bool Anchored(duckdb::idx_t row, uint32_t anchors) const;
   void Analyze(duckdb::idx_t row);
   void Take(TokenBatch& batch);
   void Start(bool anchored, uint32_t anchors = 0);
