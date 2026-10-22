@@ -43,7 +43,8 @@
 namespace irs::detail {
 
 template<PhraseMatch M>
-inline constexpr bool kOffsetsCount = M == PhraseMatch::Slop;
+inline constexpr bool kOffsetsCount =
+  M == PhraseMatch::Slop || M == PhraseMatch::Ordered;
 
 template<PhraseMatch M>
 offsets::Root::ptr MakeFixedPhraseOffsets(const FixedPhraseQuery& query) {

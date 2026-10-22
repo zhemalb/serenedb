@@ -35,6 +35,7 @@ bool Resolve(const TermReader* field, Handles& out) {
 Root::ptr Make(const FixedPhraseQuery& query) {
   return detail::ResolveMatch(
     query, [&] { return MakeFixedPhraseSlop(query); },
+    [&] { return MakeFixedPhraseOrdered(query); },
     [&] { return MakeFixedPhraseIntervals(query); },
     [&] { return MakeFixedPhrase(query); });
 }
@@ -42,6 +43,7 @@ Root::ptr Make(const FixedPhraseQuery& query) {
 Root::ptr Make(const VariadicPhraseQuery& query) {
   return detail::ResolveMatch(
     query, [&] { return MakeVariadicPhraseSlop(query); },
+    [&] { return MakeVariadicPhraseOrdered(query); },
     [&] { return MakeVariadicPhraseIntervals(query); },
     [&] { return MakeVariadicPhrase(query); });
 }

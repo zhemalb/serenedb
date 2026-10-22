@@ -46,10 +46,12 @@ Root::ptr Make(const NGramSimilarityQuery& query);
 
 Root::ptr MakeFixedPhrase(const FixedPhraseQuery& query);
 Root::ptr MakeFixedPhraseIntervals(const FixedPhraseQuery& query);
+Root::ptr MakeFixedPhraseOrdered(const FixedPhraseQuery& query);
 Root::ptr MakeFixedPhraseSlop(const FixedPhraseQuery& query);
 
 Root::ptr MakeVariadicPhrase(const VariadicPhraseQuery& query);
 Root::ptr MakeVariadicPhraseIntervals(const VariadicPhraseQuery& query);
+Root::ptr MakeVariadicPhraseOrdered(const VariadicPhraseQuery& query);
 Root::ptr MakeVariadicPhraseSlop(const VariadicPhraseQuery& query);
 
 Root::ptr MakeNGram(const NGramSimilarityQuery& query);

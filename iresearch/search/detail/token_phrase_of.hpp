@@ -224,7 +224,8 @@ Result MakeTokenPhrase(const TokenPhraseQuery& query, uint64_t interrogations,
       std::forward_as_tuple(std::move(node)), query, Scored);
   };
   if constexpr (Scored) {
-    return ResolveBool(query.Compiled().slop.max != 0, make);
+    const auto& compiled = query.Compiled();
+    return ResolveBool(compiled.slop.max != 0 || compiled.open, make);
   } else {
     return make.template operator()<false>();
   }
