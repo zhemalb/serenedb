@@ -82,12 +82,6 @@ class PhraseFixedSlots {
     return _matcher.DocFreqBound();
   }
 
-  bool MatchOrdered(doc_id_t)
-    requires(kHasFreqBound)
-  {
-    return _matcher.template Match<true>();
-  }
-
   uint32_t FreqBoundOf(uint32_t freq) const noexcept
     requires(kHasFreqBound)
   {
