@@ -26,6 +26,7 @@
 #include <array>
 #include <limits>
 #include <memory>
+#include <vector>
 
 #include "iresearch/analysis/token_attributes.hpp"
 #include "iresearch/formats/posting/common.hpp"
@@ -94,6 +95,11 @@ struct TermPositionTraits<FixedTermPosition<Offs>> {
 
   static void ResetPos(const T& pos) { pos.first->reset(); }
 
+  static uint32_t Read(T& pos, PosAttr::value_t* out, score_t*) {
+    static_assert(!Offs);
+    return pos.first->ReadPositions(out);
+  }
+
   static const OffsAttr& Offsets(const T& pos) noexcept {
     static_assert(Offs);
     const auto* offs = irs::get<OffsAttr>(*pos.first);
@@ -141,8 +147,6 @@ class SinglePositionStrategy {
     ++it;
     return match;
   }
-
-  consteval bool NextPermutation(Iterator&, const Iterator&) { return false; }
 
  private:
   Iterator& _lead_it;
@@ -220,21 +224,6 @@ class IntervalPositionStrategy {
     const auto bound = _skipped ? 0 : Reach(sought, _lead_it, fail_it);
     lead_bound = std::max(bound, _lead_pos.value() + 1);
     return false;
-  }
-
-  bool NextPermutation(Iterator& it, const Iterator& end) {
-    SDB_ASSERT(it != _lead_it);
-    const auto at_end = it == end;
-    if (!at_end && !_skipped) {
-      SDB_ASSERT(pos_limits::eof(Traits::Position(*it)));
-      return false;
-    }
-    if (StepBack(it)) {
-      return true;
-    }
-
-    it = end;
-    return !at_end;
   }
 
  private:
@@ -342,8 +331,12 @@ class PhraseMatcher {
   static constexpr size_t kRarestLeadSlots = 4;
   static constexpr bool kRarestLead =
     HasIntervals && !Offs && (N == 0 || N >= kRarestLeadSlots);
+  static constexpr bool kCounting = HasIntervals && HasFreq;
+  static constexpr uint32_t kCheckWindow = 8;
+  static constexpr uint32_t kCheckFails = 4;
+  static constexpr uint32_t kMaxSkip = 1024;
 
-  explicit PhraseMatcher(size_t size) : _pos{size} {}
+  explicit PhraseMatcher(size_t size) : _pos{size}, _tuples{size} {}
 
   TermPosition& Position(size_t i) noexcept {
     SDB_ASSERT(i < _pos.size());
@@ -427,7 +420,9 @@ class PhraseMatcher {
     if constexpr (HasBoost) {
       _phrase_boost = 0.f;
     }
-    if constexpr (HasIntervals || Offs) {
+    if constexpr (kCounting) {
+      return CountTuples();
+    } else if constexpr (HasIntervals || Offs) {
       if constexpr (kRarestLead) {
         if (_pos.size() >= kRarestLeadSlots) {
           return NextPositionRarest();
@@ -464,7 +459,6 @@ class PhraseMatcher {
     if constexpr (!Ordered) {
       OrderByDocFreq();
     }
-    uint32_t phrase_freq = 0;
     auto& lead = *_pos.front().first;
     lead.next();
     auto lead_it = std::begin(_pos);
@@ -479,61 +473,160 @@ class PhraseMatcher {
 
         const auto term_position = strategy.NextPosition(it);
         if (!pos_limits::valid(term_position)) {
-          return phrase_freq;
+          return 0;
         }
         const auto sought = pos.seek(term_position);
 
         if (pos_limits::eof(sought)) {
-          if constexpr (HasFreq) {
-            if (!strategy.NextPermutation(it, end)) {
-              return phrase_freq;
-            }
-
-            if (it == end) {
-              lead.next();
-              match = false;
-            }
-            continue;
-          } else {
-            return phrase_freq;
-          }
+          return 0;
         }
         match = strategy.AdvanceIterators(
           strategy.Match(term_position, sought, it), sought, end, it);
-
-        if constexpr (HasFreq) {
-          if (it == end && match) {
-            if (!strategy.NextPermutation(it, end)) {
-              break;
-            }
-            ++phrase_freq;
-            TakeBoost();
-          }
-        }
         if (!match) {
           break;
         }
       }
       if (match) {
-        if constexpr (HasFreq) {
-          ++phrase_freq;
-          TakeBoost();
-          lead.next();
-        } else {
-          return 1;
-        }
+        return 1;
       }
     }
 
-    return phrase_freq;
+    return 0;
+  }
+
+  struct Tuples {
+    explicit Tuples(size_t slots) : starts(slots + 1) {}
+
+    std::vector<uint32_t> starts;
+    std::vector<PosAttr::value_t> positions;
+    std::vector<uint64_t> counts;
+    [[no_unique_address]] utils::Need<HasBoost, std::vector<score_t>> boosts;
+    [[no_unique_address]] utils::Need<HasBoost, std::vector<score_t>> best;
+    uint32_t checks = 0;
+    uint32_t fails = 0;
+    uint32_t skip = 0;
+    uint32_t interval = 0;
+  };
+
+  TermPosition& Slot(size_t i) noexcept {
+    return _pos[_reversed ? _pos.size() - 1 - i : i];
+  }
+
+  score_t* BoostsAt(uint32_t at) noexcept {
+    if constexpr (HasBoost) {
+      return _tuples.boosts.data() + at;
+    } else {
+      return nullptr;
+    }
+  }
+
+  bool Exists() {
+    if constexpr (kRarestLead) {
+      if (_pos.size() >= kRarestLeadSlots) {
+        return NextPositionRarest() != 0;
+      }
+    }
+    return NextPositionGeneric() != 0;
+  }
+
+  uint32_t CountTuples() {
+    static_assert(kCounting && !Offs);
+    auto& t = _tuples;
+    const size_t n = _pos.size();
+    SDB_ASSERT(n > 1);
+    if (t.skip != 0) {
+      --t.skip;
+    } else {
+      const bool exists = Exists();
+      t.fails += !exists;
+      if (++t.checks == kCheckWindow) {
+        t.interval = t.fails >= kCheckFails
+                       ? 0
+                       : std::clamp(2 * t.interval, kCheckWindow, kMaxSkip);
+        t.skip = t.interval;
+        t.checks = 0;
+        t.fails = 0;
+      }
+      if (!exists) {
+        return 0;
+      }
+      for (auto& slot : _pos) {
+        Traits::ResetPos(slot);
+      }
+    }
+    size_t total = 0;
+    for (const auto& slot : _pos) {
+      total += slot.first->DocFreq();
+    }
+    if (t.positions.size() < total) {
+      t.positions.resize(total);
+      t.counts.resize(total);
+      if constexpr (HasBoost) {
+        t.boosts.resize(total);
+        t.best.resize(total);
+      }
+    }
+    auto* const positions = t.positions.data();
+    auto* const counts = t.counts.data();
+    uint32_t at = 0;
+    for (size_t i = 0; i != n; ++i) {
+      t.starts[i] = at;
+      at += Traits::Read(Slot(i), positions + at, BoostsAt(at));
+    }
+    t.starts[n] = at;
+
+    for (uint32_t k = t.starts[n - 1]; k != at; ++k) {
+      counts[k] = 1;
+      if constexpr (HasBoost) {
+        t.best[k] = t.boosts[k];
+      }
+    }
+    for (size_t i = n - 1; i-- != 0;) {
+      const auto& gap = Traits::Interval(Slot(i + 1));
+      const auto* const next = positions + t.starts[i + 1];
+      const auto* const next_counts = counts + t.starts[i + 1];
+      const uint32_t m = t.starts[i + 2] - t.starts[i + 1];
+      uint32_t lo = 0;
+      uint32_t hi = 0;
+      uint64_t sum = 0;
+      for (uint32_t k = t.starts[i], end = t.starts[i + 1]; k != end; ++k) {
+        const uint64_t base = positions[k];
+        const uint64_t high = base + gap.offs_max;
+        const uint64_t low = base + gap.offs_min;
+        while (hi != m && next[hi] <= high) {
+          sum += next_counts[hi];
+          ++hi;
+        }
+        while (lo != hi && next[lo] < low) {
+          sum -= next_counts[lo];
+          ++lo;
+        }
+        counts[k] = sum;
+        if constexpr (HasBoost) {
+          const auto* const next_best = t.best.data() + t.starts[i + 1];
+          score_t best = 0.f;
+          for (uint32_t j = lo; j != hi; ++j) {
+            best = std::max(best, next_best[j]);
+          }
+          t.best[k] = sum != 0 ? std::min(t.boosts[k], best) : 0.f;
+        }
+      }
+    }
+    uint64_t freq = 0;
+    for (uint32_t k = 0, end = t.starts[1]; k != end; ++k) {
+      freq += counts[k];
+      if constexpr (HasBoost) {
+        _phrase_boost = std::max(_phrase_boost, t.best[k]);
+      }
+    }
+    return static_cast<uint32_t>(std::min<uint64_t>(freq, kMaxFreq));
   }
 
  private:
   struct Side {
-    uint32_t matches = 0;
-    PosAttr::value_t lead_bound = 0;
+    bool matched = false;
     bool exhausted = false;
-    [[no_unique_address]] utils::Need<HasBoost, score_t> boost{};
+    PosAttr::value_t lead_bound = 0;
   };
 
   uint32_t NextPositionRarest() {
@@ -558,14 +651,6 @@ class PhraseMatcher {
     return NextPositionFrom<true, true>(lead_it);
   }
 
-  static Side Whole() noexcept {
-    Side side{.matches = 1};
-    if constexpr (HasBoost) {
-      side.boost = kNoBoost;
-    }
-    return side;
-  }
-
   template<bool Forward, bool Backward, bool BackwardFirst = false>
   uint32_t NextPositionFrom(typename Positions::iterator lead_it) {
     using Iterator = typename Positions::iterator;
@@ -577,13 +662,12 @@ class PhraseMatcher {
     IntervalPositionStrategy<Iterator> forward{lead_it, lead};
     IntervalPositionStrategy<ReverseIterator> backward{reverse_lead_it, lead,
                                                        true};
-    uint32_t phrase_freq = 0;
     for (lead.next(); !pos_limits::eof(lead.value());) {
-      auto after = Whole();
-      auto before = Whole();
+      Side after{.matched = true};
+      Side before{.matched = true};
       if constexpr (BackwardFirst) {
         before = Complete(backward, reverse_lead_it, reverse_end);
-        if (before.matches != 0) {
+        if (before.matched) {
           after = Complete(forward, lead_it, end);
         }
       } else {
@@ -591,29 +675,21 @@ class PhraseMatcher {
           after = Complete(forward, lead_it, end);
         }
         if constexpr (Backward) {
-          if (after.matches != 0) {
+          if (after.matched) {
             before = Complete(backward, reverse_lead_it, reverse_end);
           }
         }
       }
-      if (after.matches != 0 && before.matches != 0) {
-        if constexpr (!HasFreq) {
-          return 1;
-        }
-        phrase_freq += after.matches * before.matches;
-        if constexpr (HasBoost) {
-          _phrase_boost = std::max(
-            _phrase_boost,
-            std::min({after.boost, before.boost, Traits::Boost(*lead_it)}));
-        }
+      if (after.matched && before.matched) {
+        return 1;
       }
       if (after.exhausted || before.exhausted) {
-        return phrase_freq;
+        return 0;
       }
       lead.seek(
         std::max({after.lead_bound, before.lead_bound, lead.value() + 1}));
     }
-    return phrase_freq;
+    return 0;
   }
 
   template<typename Strategy, typename Iterator>
@@ -621,7 +697,6 @@ class PhraseMatcher {
                                  const Iterator& end) {
     Side side;
     strategy.NotifyNextLead(end);
-    bool match = true;
     for (auto it = lead_it + 1; it != end;) {
       auto& pos = *it->first;
 
@@ -633,53 +708,16 @@ class PhraseMatcher {
       const auto sought = pos.seek(term_position);
 
       if (pos_limits::eof(sought)) {
-        if constexpr (HasFreq) {
-          if (!strategy.NextPermutation(it, end)) {
-            side.exhausted = true;
-            return side;
-          }
-          if (it == end) {
-            match = false;
-          }
-          continue;
-        } else {
-          side.exhausted = true;
-          return side;
-        }
+        side.exhausted = true;
+        return side;
       }
-      match =
-        strategy.AdvanceIterators(strategy.Match(term_position, sought, it),
-                                  sought, end, it, side.lead_bound);
-
-      if constexpr (HasFreq) {
-        if (it == end && match) {
-          if (!strategy.NextPermutation(it, end)) {
-            break;
-          }
-          Count(side, lead_it, end);
-        }
-      }
-      if (!match) {
-        break;
+      if (!strategy.AdvanceIterators(strategy.Match(term_position, sought, it),
+                                     sought, end, it, side.lead_bound)) {
+        return side;
       }
     }
-    if (match) {
-      Count(side, lead_it, end);
-    }
+    side.matched = true;
     return side;
-  }
-
-  template<typename Iterator>
-  IRS_FORCE_INLINE static void Count(Side& side, const Iterator& lead_it,
-                                     const Iterator& end) noexcept {
-    ++side.matches;
-    if constexpr (HasBoost) {
-      score_t match = kNoBoost;
-      for (auto it = lead_it + 1; it != end; ++it) {
-        match = std::min(match, Traits::Boost(*it));
-      }
-      side.boost = std::max(side.boost, match);
-    }
   }
 
   auto Rarest() {
@@ -746,6 +784,7 @@ class PhraseMatcher {
   }
 
   Positions _pos;
+  [[no_unique_address]] utils::Need<kCounting, Tuples> _tuples;
   uint32_t _phrase_freq = 0;
   [[no_unique_address]] utils::Need<HasBoost, score_t> _phrase_boost{};
   uint32_t _freq_scale = 1;

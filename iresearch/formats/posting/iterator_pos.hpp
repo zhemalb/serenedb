@@ -106,26 +106,41 @@ class PositionImpl final : public PosAttr {
       Skip(_pend_pos);
       _pend_pos = 0;
     }
-    while (n != 0) {
-      if (_buf_pos == pos_limits::kBlockSize) {
-        ReadBlock();
-        _buf_pos = 0;
-      }
-      const auto take = static_cast<uint32_t>(
-        std::min<uint64_t>(n, pos_limits::kBlockSize - _buf_pos));
-      std::copy_n(_pos_deltas + _buf_pos, take, pos);
+    Walk(n, [&](uint32_t at, uint32_t take) {
+      std::copy_n(_pos_deltas + at, take, pos);
       pos += take;
       if constexpr (IteratorTraits::Offset()) {
         if (offs_start != nullptr) {
-          std::copy_n(_offs_start_deltas + _buf_pos, take, offs_start);
-          std::copy_n(_offs_lengths + _buf_pos, take, offs_len);
+          std::copy_n(_offs_start_deltas + at, take, offs_start);
+          std::copy_n(_offs_lengths + at, take, offs_len);
           offs_start += take;
           offs_len += take;
         }
       }
-      _buf_pos += take;
-      n -= take;
+    });
+  }
+
+  uint32_t ReadPositions(uint32_t* out) {
+    static_assert(!IteratorTraits::Offset());
+    const uint32_t freq = _freq;
+    if (_pend_pos > freq) {
+      Skip(_pend_pos - freq);
+      _pend_pos = freq;
     }
+    const auto count = static_cast<uint32_t>(_pend_pos);
+    auto value = _value;
+    auto* it = out;
+    Walk(count, [&](uint32_t at, uint32_t take) {
+      const auto* const deltas = _pos_deltas + at;
+      for (uint32_t i = 0; i != take; ++i) {
+        value += deltas[i];
+        it[i] = value;
+      }
+      it += take;
+      _pend_pos -= take;
+    });
+    _value = value;
+    return count;
   }
 
   void SkipDeltas(uint64_t n) noexcept { _pend_pos += n; }
@@ -325,6 +340,21 @@ class PositionImpl final : public PosAttr {
     _buf_pos += count;
     SDB_ASSERT(_buf_pos <= pos_limits::kBlockSize);
     Clear();
+  }
+
+  template<typename Visit>
+  IRS_FORCE_INLINE void Walk(uint32_t n, Visit&& visit) {
+    while (n != 0) {
+      if (_buf_pos == pos_limits::kBlockSize) {
+        ReadBlock();
+        _buf_pos = 0;
+      }
+      const auto take = static_cast<uint32_t>(
+        std::min<uint64_t>(n, pos_limits::kBlockSize - _buf_pos));
+      visit(static_cast<uint32_t>(_buf_pos), take);
+      _buf_pos += take;
+      n -= take;
+    }
   }
 
   void ReadAttributes() noexcept {
