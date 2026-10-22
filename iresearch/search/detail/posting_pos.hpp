@@ -21,6 +21,7 @@
 #pragma once
 
 #include <algorithm>
+#include <span>
 #include <vector>
 
 #include "iresearch/formats/posting/block_index.hpp"
@@ -73,6 +74,7 @@ class PostingPos {
       *(std::end(_docs) - 1) = doc;
       *(std::end(_freqs.data) - 1) = meta.freq;
       _left_in_leaf = 1;
+      _leaf_len = 1;
       _max_in_leaf = doc;
     } else {
       _in = OpenDocInput(meta, doc_in);
@@ -119,6 +121,19 @@ class PostingPos {
   uint32_t LeafBlock() const noexcept {
     SDB_ASSERT(_left_in_list < _docs_count);
     return (_docs_count - _left_in_list - 1) / doc_limits::kBlockSize;
+  }
+
+  std::span<const doc_id_t> LeafDocs() const noexcept {
+    return {std::end(_docs) - _leaf_len, _leaf_len};
+  }
+
+  std::span<const uint32_t> LeafFreqs() const noexcept {
+    return {std::end(_freqs.data) - _leaf_len, _leaf_len};
+  }
+
+  uint32_t LeafOffset() const noexcept {
+    SDB_ASSERT(_left_in_leaf < _leaf_len);
+    return _leaf_len - _left_in_leaf - 1;
   }
 
   IRS_FORCE_INLINE doc_id_t Next() {
@@ -235,6 +250,7 @@ class PostingPos {
       _left_in_list = 0;
       block_io::ReadTail<block_io::kFreqBias>(tail, in, Enc(), _freqs.data);
     }
+    _leaf_len = _left_in_leaf;
     _max_in_leaf = *(std::end(_docs) - 1);
   }
 
@@ -269,6 +285,7 @@ class PostingPos {
   doc_id_t _max_in_leaf = doc_limits::invalid();
   uint32_t _docs_count = 0;
   uint32_t _left_in_leaf = 0;
+  uint32_t _leaf_len = 0;
   uint32_t _left_in_list = 0;
 };
 
