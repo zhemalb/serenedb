@@ -111,6 +111,7 @@ constexpr bool eof(uint32_t pos) noexcept { return eof() == pos; }
 constexpr uint32_t min() noexcept { return 1; }
 
 inline constexpr uint32_t kBlockSize = 256;
+inline constexpr uint32_t kOpenGap = std::numeric_limits<uint32_t>::max();
 
 }  // namespace pos_limits
 namespace writer_limits {
