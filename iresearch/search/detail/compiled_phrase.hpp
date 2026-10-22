@@ -114,12 +114,6 @@ struct CompiledPhrase {
 bool AcceptsTerm(const CompiledPhrase& phrase, const CompiledPhrase::Slot& slot,
                  const duckdb::string_t& term);
 
-inline bool Accepts(const CompiledPhrase& phrase,
-                    const CompiledPhrase::Slot& slot,
-                    const duckdb::string_t& term) {
-  return slot.word ? *slot.word == term : AcceptsTerm(phrase, slot, term);
-}
-
 uint64_t MaskOf(const CompiledPhrase& phrase, const duckdb::string_t& term);
 
 template<typename Visitor>
