@@ -200,7 +200,7 @@ class PrunedPhrase : public Root {
         continue;
       }
       ++_passed;
-      if (!_slots.MatchOrdered(doc)) {
+      if (!_slots.MatchAfterBound()) {
         continue;
       }
       const auto freq = _slots.Freq();

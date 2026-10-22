@@ -132,10 +132,10 @@ class PhraseSlots {
     return _matcher.DocFreqBound();
   }
 
-  bool MatchOrdered(doc_id_t)
+  bool MatchAfterBound()
     requires(kHasFreqBound)
   {
-    return _matcher.template Match<true>();
+    return _matcher.Match();
   }
 
   uint32_t FreqBoundOf(uint32_t freq) const noexcept
