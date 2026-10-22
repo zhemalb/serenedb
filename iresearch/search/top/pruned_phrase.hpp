@@ -90,6 +90,15 @@ class PrunedPhrase : public Root {
       .stats = args.stats,
       .boost = args.boost,
     });
+    _bound_provider.freq.value = _bound_freqs;
+    _bound_score = args.scorer->PrepareScorer({
+      .segment = segment,
+      .field = field.meta(),
+      .doc_attrs = _bound_provider,
+      .fetcher = *args.fetcher,
+      .stats = args.stats,
+      .boost = args.boost,
+    });
     if (auto source = args.scorer->PrepareScoreBoundSource()) {
       _bound_func = args.scorer->PrepareScorer({
         .segment = segment,
@@ -192,10 +201,13 @@ class PrunedPhrase : public Root {
     }
     for (; doc < end && _seen != kWindow; doc = _slots.Next(doc)) {
       ++_seen;
-      const auto bound = _slots.FreqBound();
-      _freqs[0] = bound;
-      _fetcher.Fetch(doc);
-      auto score = _score.Score();
+      const auto& lead = _slots.Lead();
+      if (lead.LeafBlock() != _bound_leaf) {
+        ScoreLeafBounds(lead);
+      }
+      const auto at = lead.LeafOffset();
+      const auto bound = _bound_freqs[at];
+      auto score = _bound_scores[at];
       if (score <= collector.ScoreThreshold()) {
         continue;
       }
@@ -208,10 +220,12 @@ class PrunedPhrase : public Root {
       if constexpr (kHasScale) {
         _freqs[0] = freq;
         _scales[0] = _slots.Scale();
+        _fetcher.Fetch(doc);
         score = _score.Score();
         _scales[0] = kNoBoost;
       } else if (freq != bound) {
         _freqs[0] = freq;
+        _fetcher.Fetch(doc);
         score = _score.Score();
       }
       _admit.Add(collector, score, doc);
@@ -229,6 +243,29 @@ class PrunedPhrase : public Root {
     return doc;
   }
 
+  template<typename Lead>
+  void ScoreLeafBounds(const Lead& lead) {
+    _bound_leaf = lead.LeafBlock();
+    const auto docs = lead.LeafDocs();
+    const auto freqs = lead.LeafFreqs();
+    const auto at = lead.LeafOffset();
+    const auto len = docs.size();
+    for (size_t i = at; i != len; ++i) {
+      _bound_freqs[i] = _slots.FreqBoundOf(freqs[i]);
+    }
+    if (at == 0 && len == kPostingBlock) {
+      _fetcher.FetchPostingBlock(
+        std::span<const doc_id_t, kPostingBlock>{docs.data(), kPostingBlock});
+      _bound_score.ScorePostingBlock(_bound_scores);
+      return;
+    }
+    _fetcher.Fetch(docs.subspan(at));
+    _bound_provider.freq.value = _bound_freqs + at;
+    _bound_score.Score(_bound_scores + at,
+                       static_cast<scores_size_t>(len - at));
+    _bound_provider.freq.value = _bound_freqs;
+  }
+
   void FlushBatch(LoserScoreCollector& collector) {
     if (_batch != 0) {
       _fetcher.Fetch(std::span<const doc_id_t>{_docs, _batch});
@@ -242,12 +279,17 @@ class PrunedPhrase : public Root {
   ABSL_CACHELINE_ALIGNED score_t _scores[kScoreBlock];
   ABSL_CACHELINE_ALIGNED uint32_t _freqs[kScoreBlock];
   [[no_unique_address]] utils::Need<kHasScale, score_t[kScoreBlock]> _scales{};
+  ABSL_CACHELINE_ALIGNED uint32_t _bound_freqs[kPostingBlock];
+  ABSL_CACHELINE_ALIGNED score_t _bound_scores[kPostingBlock];
   Slots _slots;
   Provider _provider;
+  irs::detail::LeafProvider _bound_provider;
   ScoreFunction _score;
+  ScoreFunction _bound_score;
   ScoreFunction _bound_func;
   ScoreBoundSource::ptr _bound_source;
   ColumnArgsFetcher& _fetcher;
+  uint32_t _bound_leaf = std::numeric_limits<uint32_t>::max();
   doc_id_t _block_last = doc_limits::invalid();
   uint32_t _run = std::numeric_limits<uint32_t>::max();
   score_t _run_score = 0;
