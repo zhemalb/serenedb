@@ -892,6 +892,46 @@ TEST(PhraseCheckTest, duplicate_expanded_terms_list_their_slot_once) {
   EXPECT_EQ(2U, Verify(phrase, "quick brown x quick brown", expanded).freq);
 }
 
+TEST(PhraseCheckTest, sieve_admits_every_expanded_term) {
+  auto phrase = Phrase("the");
+  phrase.push_back<irs::ByPrefixOptions>().term = Bytes("w");
+  std::vector<std::vector<irs::bstring>> expanded(2);
+  std::mt19937 rng{42};
+  for (size_t i = 0; i != 5000; ++i) {
+    std::string word = "w";
+    const auto length = 1 + rng() % 40;
+    for (size_t k = 0; k != length; ++k) {
+      word += static_cast<char>('a' + rng() % 26);
+    }
+    expanded[1].emplace_back(Bytes(word));
+  }
+  const irs::CompiledPhrase compiled{phrase, expanded, {}};
+  EXPECT_FALSE(compiled.plain);
+  EXPECT_LE(compiled.sieve.words.size(), irs::CompiledPhrase::Sieve::kMaxWords);
+  for (const auto& term : compiled.terms) {
+    const auto view =
+      irs::MakeTermView(irs::ViewCast<char>(irs::bytes_view{term}));
+    EXPECT_TRUE(irs::MayAccept(compiled, view));
+    EXPECT_EQ(compiled.accept.Find(view), irs::FindAccepted(compiled, view));
+  }
+  size_t rejected = 0;
+  for (size_t i = 0; i != 5000; ++i) {
+    std::string word;
+    const auto length = 1 + rng() % 40;
+    for (size_t k = 0; k != length; ++k) {
+      word += static_cast<char>('a' + rng() % 26);
+    }
+    const auto view = irs::MakeTermView(word);
+    EXPECT_EQ(compiled.accept.Find(view), irs::FindAccepted(compiled, view));
+    rejected += !irs::MayAccept(compiled, view);
+  }
+  EXPECT_GT(rejected, 4000U);
+  const auto text = absl::StrCat(
+    "the ", irs::ViewCast<char>(irs::bytes_view{expanded[1][7]}), " the ",
+    irs::ViewCast<char>(irs::bytes_view{expanded[1][4999]}));
+  EXPECT_EQ(2U, Verify(phrase, text, expanded).freq);
+}
+
 TEST(PhraseCheckTest, sloppy_patterns_skip_separated_words) {
   auto phrase = Phrase("quick brown_fox");
   phrase.push_back<irs::ByPrefixOptions>().term = Bytes("br");
