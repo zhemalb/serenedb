@@ -34,7 +34,8 @@ void PhraseCheck::AnchorMatch::Reset(uint32_t anchors) {
   _batch_base = 0;
   _end = 0;
   _carry_base = 0;
-  _carry.clear();
+  _carry_terms.clear();
+  _carry_pos.clear();
   _arena.Reset();
   _pending.clear();
   _last = 0;
@@ -50,8 +51,10 @@ void PhraseCheck::AnchorMatch::Carry(uint64_t left) {
   while (from > _carry_base && PosAt(from - 1) >= keep) {
     --from;
   }
-  _carry.erase(_carry.begin(),
-               _carry.begin() + (std::min(from, _batch_base) - _carry_base));
+  const auto drop =
+    static_cast<ptrdiff_t>(std::min(from, _batch_base) - _carry_base);
+  _carry_terms.erase(_carry_terms.begin(), _carry_terms.begin() + drop);
+  _carry_pos.erase(_carry_pos.begin(), _carry_pos.begin() + drop);
   for (auto at = std::max(from, _batch_base); at != _end; ++at) {
     auto term = _batch_terms[at - _batch_base];
     if (!term.IsInlined()) {
@@ -60,7 +63,8 @@ void PhraseCheck::AnchorMatch::Carry(uint64_t left) {
       std::memcpy(data, term.GetData(), size);
       term = {reinterpret_cast<const char*>(data), size};
     }
-    _carry.emplace_back(term, _batch_pos[at - _batch_base]);
+    _carry_terms.emplace_back(term);
+    _carry_pos.emplace_back(_batch_pos[at - _batch_base]);
   }
   _carry_base = from;
 }
@@ -179,7 +183,7 @@ void PhraseCheck::AnchorMatch::Drain(State& state) {
   if (state.done) {
     return;
   }
-  _batch_base = _carry_base + _carry.size();
+  _batch_base = _carry_base + _carry_terms.size();
   _end = _batch_base;
   for (const auto at : _pending) {
     if (Hit(at, state)) {
@@ -201,7 +205,7 @@ void PhraseCheck::AnchorMatch::Feed(const TokenBatch& batch, uint32_t from,
                                     State& state) {
   SDB_ASSERT(batch.terms == _batch_terms.data());
   const auto& layout = *state.phrase->anchor;
-  _batch_base = _carry_base + _carry.size();
+  _batch_base = _carry_base + _carry_terms.size();
   _end = _batch_base + batch.count;
   const uint64_t last = batch.pos[batch.count - 1];
   size_t keep = 0;
@@ -254,48 +258,134 @@ bool PhraseCheck::AnchorMatch::Hit(size_t at, State& state) {
 template<bool Right>
 uint64_t PhraseCheck::AnchorMatch::Ways(uint32_t slot, size_t at,
                                         State& state) {
-  const auto& phrase = *state.phrase;
-  if (slot == (Right ? phrase.slots.size() - 1 : 0)) {
+  const auto edge =
+    static_cast<uint32_t>(Right ? state.phrase->slots.size() - 1 : 0);
+  if (slot == edge) {
     return 1;
   }
   const auto other = Right ? slot + 1 : slot - 1;
-  const auto& next = phrase.slots[other];
-  const auto& gap = Right ? next : phrase.slots[slot];
-  const uint64_t pos = PosAt(at);
-  uint64_t ways = 0;
-  uint64_t accepted = std::numeric_limits<uint64_t>::max();
-  for (auto j = at; Right ? ++j < _end : j-- > _carry_base;) {
-    const uint64_t p = PosAt(j);
-    const auto distance = Right ? p - pos : pos - p;
-    if (distance > gap.offs_max) {
-      break;
-    }
-    if (Over(state)) {
-      return 0;
-    }
-    if (distance < gap.offs_min || p == accepted ||
-        !Accepts(phrase, next, TermAt(j))) {
-      continue;
-    }
-    accepted = p;
-    ways += Ways<Right>(other, j, state);
-    if (_overran) {
-      return 0;
-    }
-    if (!state.count && ways != 0) {
-      return 1;
-    }
-  }
-  return ways;
+  return other == edge ? Scan<Right, true>(slot, at, state)
+                       : Walk<Right>(slot, at, state);
 }
 
-bool PhraseCheck::AnchorMatch::Over(State& state) noexcept {
-  if (++_steps <= kStepsPerToken * _end + kStepSlack) {
-    return false;
+template<bool Right>
+uint64_t PhraseCheck::AnchorMatch::Walk(uint32_t slot, size_t at,
+                                        State& state) {
+  return Scan<Right, false>(slot, at, state);
+}
+
+template<bool Right>
+uint64_t PhraseCheck::AnchorMatch::Deeper(uint32_t slot, size_t at,
+                                          State& state) {
+  return Ways<Right>(slot, at, state);
+}
+
+template<bool Right, bool Last>
+uint64_t PhraseCheck::AnchorMatch::Scan(uint32_t slot, size_t at,
+                                        State& state) {
+  const auto other = Right ? slot + 1 : slot - 1;
+  const auto& next = state.phrase->slots[other];
+  const auto& gap = Right ? next : state.phrase->slots[slot];
+  const uint64_t offs_min = gap.offs_min;
+  const uint64_t offs_max = gap.offs_max;
+  const auto* const word = next.word ? &*next.word : nullptr;
+  const uint64_t pos = PosAt(at);
+  const auto limit = kStepsPerToken * _end + kStepSlack;
+  const auto carry_base = _carry_base;
+  const auto batch_base = _batch_base;
+  SDB_ASSERT(_steps <= limit);
+  auto budget = limit - _steps;
+  uint64_t ways = 0;
+  uint64_t accepted = std::numeric_limits<uint64_t>::max();
+  const auto walk = [&](const duckdb::string_t* terms,
+                        const uint32_t* positions, size_t base,
+                        size_t n) IRS_FORCE_INLINE {
+    for (size_t k = 0; k != n; ++k) {
+      const auto i = Right ? k : n - 1 - k;
+      const uint64_t p = positions[i];
+      const auto distance = Right ? p - pos : pos - p;
+      if (distance > offs_max) {
+        return false;
+      }
+      if (budget == 0) [[unlikely]] {
+        _overran = true;
+        state.done = true;
+        return false;
+      }
+      --budget;
+      if (distance < offs_min || p == accepted) {
+        continue;
+      }
+      const auto& term = terms[i];
+      if (word
+            ? *word != term
+            : !AcceptsTerm(*state.phrase, state.phrase->slots[other], term)) {
+        continue;
+      }
+      accepted = p;
+      if constexpr (Last) {
+        ++ways;
+      } else {
+        _steps = limit - budget;
+        ways += Deeper<Right>(other, base + i, state);
+        budget = limit - _steps;
+        if (_overran) {
+          return false;
+        }
+      }
+      if (!state.count && ways != 0) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const duckdb::string_t* terms = _batch_terms.data();
+  const uint32_t* positions = _batch_pos.data();
+  size_t base = batch_base;
+  size_t n = 0;
+  bool more = false;
+  if constexpr (Right) {
+    more = at + 1 < batch_base;
+    base = at + 1;
+    if (more) {
+      terms = _carry_terms.data() + (base - carry_base);
+      positions = _carry_pos.data() + (base - carry_base);
+      n = batch_base - base;
+    } else {
+      terms += base - batch_base;
+      positions += base - batch_base;
+      n = _end - base;
+    }
+  } else {
+    more = at > batch_base;
+    if (more) {
+      n = at - batch_base;
+    } else {
+      terms = _carry_terms.data();
+      positions = _carry_pos.data();
+      base = carry_base;
+      n = std::min(at, batch_base) - carry_base;
+    }
   }
-  _overran = true;
-  state.done = true;
-  return true;
+  while (walk(terms, positions, base, n) && more) {
+    more = false;
+    if constexpr (Right) {
+      terms = _batch_terms.data();
+      positions = _batch_pos.data();
+      base = batch_base;
+      n = _end - batch_base;
+    } else {
+      terms = _carry_terms.data();
+      positions = _carry_pos.data();
+      base = carry_base;
+      n = batch_base - carry_base;
+    }
+  }
+  _steps = limit - budget;
+  if (_overran) {
+    return 0;
+  }
+  return !state.count && ways != 0 ? 1 : ways;
 }
 
 void PhraseCheck::AutomatonMatch::Feed(const TokenBatch& batch, uint32_t from,
