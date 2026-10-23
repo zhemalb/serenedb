@@ -178,6 +178,9 @@ class PositionImpl final : public PosAttr {
   void Notify(uint32_t freq, uint32_t n) noexcept {
     _freq = freq;
     _pend_pos += n;
+#ifdef SDB_DEV
+    ++_doc_seq;
+#endif
   }
 
   void Clear() noexcept {
@@ -245,6 +248,9 @@ class PositionImpl final : public PosAttr {
       pay_group;
     uint32_t block = 0;
     uint32_t buf_pos = 0;
+#ifdef SDB_DEV
+    uint64_t seq = 0;
+#endif
   };
 
   void Land(uint64_t pos_group, uint64_t pay_group, uint64_t pend) noexcept {
@@ -265,16 +271,21 @@ class PositionImpl final : public PosAttr {
     }
     _doc_start.block = block;
     _doc_start.buf_pos = buf_pos;
+#ifdef SDB_DEV
+    _doc_start.seq = _doc_seq;
+#endif
   }
 
   IRS_NO_INLINE void Rewind() {
     const auto start = _doc_start;
+#ifdef SDB_DEV
+    SDB_ASSERT(start.seq == _doc_seq);
+#endif
     if (_pos.group != start.pos_group) {
       _pos.group = start.pos_group;
       _pos.header = nullptr;
       if constexpr (IteratorTraits::Offset()) {
         _pay.group = start.pay_group;
-        _pay.header = nullptr;
       }
     } else {
       _pos.SeekBlock(start.block);
@@ -411,6 +422,9 @@ class PositionImpl final : public PosAttr {
   uint64_t _pend_pos = 0;  // how many positions "behind" we are
   uint64_t _buf_pos = pos_limits::kBlockSize;  // position in pos_deltas_
   DocStart _doc_start;
+#ifdef SDB_DEV
+  uint64_t _doc_seq = 0;
+#endif
   Stream _pos;
   [[no_unique_address]] ForOffset<Stream> _pay;
   [[no_unique_address]] ForOffset<OffsAttr> _offs;
