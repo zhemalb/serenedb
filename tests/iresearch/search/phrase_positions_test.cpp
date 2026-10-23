@@ -18,6 +18,7 @@
 /// Copyright holder is SereneDB GmbH, Berlin, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
+#include <absl/algorithm/container.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
@@ -30,9 +31,13 @@
 #include <iresearch/index/index_writer.hpp>
 #include <iresearch/search/detail/phrase_slop_matcher.hpp>
 #include <iresearch/search/filters/phrase_filter.hpp>
+#include <iresearch/search/offsets/make.hpp>
+#include <iresearch/search/offsets/root.hpp>
+#include <iresearch/search/queries/phrase_query.hpp>
 #include <iresearch/store/memory_directory.hpp>
 #include <iresearch/utils/pg/sql_exception.hpp>
 #include <iresearch/utils/string.hpp>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -147,6 +152,28 @@ class ExplicitTokenizer final
   }
 };
 
+class OffsetTokenizer final
+  : public irs::analysis::TypedTokenizer<OffsetTokenizer> {
+ public:
+  irs::TokenTraits Traits() const noexcept final { return {.offsets = true}; }
+
+  static constexpr std::string_view type_name() noexcept {
+    return "test_offset_words";
+  }
+
+  template<irs::TokenLayout L>
+  bool DoFill(duckdb::string_t raw, irs::TokenSink& sink) {
+    const std::string_view data{raw.GetData(), raw.GetSize()};
+    for (const auto word : absl::StrSplit(data, ' ', absl::SkipEmpty())) {
+      const auto start = static_cast<uint32_t>(word.data() - data.data());
+      sink.Emit<L>(
+        irs::MakeTermView(word),
+        irs::Offs{start, start + static_cast<uint32_t>(word.size())});
+    }
+    return true;
+  }
+};
+
 struct Field {
   irs::field_id Id() const { return kField; }
 
@@ -154,12 +181,12 @@ struct Field {
 
   std::string_view Value() const noexcept { return value; }
 
-  irs::IndexFeatures GetIndexFeatures() const noexcept {
-    return irs::IndexFeatures::Freq | irs::IndexFeatures::Pos;
-  }
+  irs::IndexFeatures GetIndexFeatures() const noexcept { return features; }
 
   irs::analysis::Tokenizer* tokenizer{};
   std::string_view value;
+  irs::IndexFeatures features =
+    irs::IndexFeatures::Freq | irs::IndexFeatures::Pos;
 };
 
 struct ScaleScore : public irs::ScorerBase<ScaleScore, tests::sort::StatsT> {
@@ -385,6 +412,113 @@ void WidenOneGap(std::span<ReferenceSlot> slots, std::mt19937& rng) {
   }
 }
 
+std::string Repeat(std::string_view pattern, size_t n) {
+  std::string text;
+  for (size_t i = 0; i != n; ++i) {
+    absl::StrAppend(&text, pattern, " ");
+  }
+  return text;
+}
+
+irs::DirectoryReader IndexDocs(irs::MemoryDirectory& dir,
+                               std::span<const std::string> docs,
+                               bool offsets) {
+  WhitespaceTokenizer whitespace;
+  OffsetTokenizer with_offsets;
+  {
+    auto writer = irs::IndexWriter::Make(dir, irs::kOmCreate,
+                                         irs::tests::DefaultWriterOptions());
+    EXPECT_NE(nullptr, writer);
+    Field field;
+    field.tokenizer = &whitespace;
+    if (offsets) {
+      field.tokenizer = &with_offsets;
+      field.features |= irs::IndexFeatures::Offs;
+    }
+    auto ctx = writer->GetBatch();
+    for (const auto& doc : docs) {
+      field.value = doc;
+      auto inserted = ctx.Insert();
+      EXPECT_TRUE(tests::InsertField(inserted, field));
+    }
+    ctx.Commit();
+    writer->RefreshCommit();
+  }
+  return irs::DirectoryReader{dir, irs::tests::DefaultReaderOptions()};
+}
+
+irs::ByPhrase LowerPhrase(const irs::ByPhraseOptions& phrase) {
+  irs::ByPhrase filter;
+  *filter.mutable_field_id() = kField;
+  *filter.mutable_options() = phrase;
+  filter.mutable_options()->LowerParts();
+  return filter;
+}
+
+std::vector<uint32_t> FreqPerDoc(const irs::ByPhraseOptions& phrase,
+                                 std::span<const std::string> docs) {
+  irs::MemoryDirectory dir;
+  const auto reader = IndexDocs(dir, docs, false);
+  EXPECT_EQ(1U, reader->size());
+  const auto filter = LowerPhrase(phrase);
+  tests::sort::FrequencyScore scorer;
+  MaxMemoryCounter counter;
+  tests::PreparedFilter prepared{filter, *reader, &scorer, counter};
+  std::vector<uint32_t> out(docs.size(), 0);
+  for (size_t i = 0; i != prepared.size(); ++i) {
+    irs::ColumnArgsFetcher fetcher;
+    auto cursor = prepared.ExecuteScored(i, fetcher);
+    auto score = cursor->PrepareScore();
+    while (!irs::doc_limits::eof(cursor->Next())) {
+      cursor->FetchScoreArgs(0);
+      fetcher.Fetch(cursor->Value());
+      irs::score_t value{};
+      score.Score(&value, 1);
+      const auto index = cursor->Value() - irs::doc_limits::min();
+      EXPECT_LT(index, out.size());
+      if (index < out.size()) {
+        out[index] = static_cast<uint32_t>(value);
+      }
+    }
+  }
+  return out;
+}
+
+irs::ByPhraseOptions TermPhrase(std::span<const ReferenceSlot> slots) {
+  irs::ByPhraseOptions phrase;
+  for (size_t s = 0; s != slots.size(); ++s) {
+    Push<irs::ByTermOptions>(phrase, slots[s], s == 0).term =
+      Bytes(slots[s].words.front().first);
+  }
+  return phrase;
+}
+
+std::vector<std::string_view> Words(const std::string& doc) {
+  return absl::StrSplit(doc, ' ', absl::SkipEmpty());
+}
+
+void ExpectDocsAgreeWithReference(std::span<const ReferenceSlot> slots,
+                                  std::span<const std::string> docs) {
+  const auto freqs = FreqPerDoc(TermPhrase(slots), docs);
+  ASSERT_EQ(docs.size(), freqs.size());
+  for (size_t i = 0; i != docs.size(); ++i) {
+    const auto words = Words(docs[i]);
+    SCOPED_TRACE(absl::StrCat("document ", i, " of ", docs.size(), ", ",
+                              words.size(), " tokens"));
+    EXPECT_EQ(Reference(words, slots).freq, freqs[i]);
+  }
+}
+
+std::vector<ReferenceSlot> Chain(
+  std::initializer_list<std::tuple<std::string_view, uint32_t, uint32_t>>
+    parts) {
+  std::vector<ReferenceSlot> slots;
+  for (const auto& [word, min, max] : parts) {
+    slots.push_back({.words = {{word, irs::kNoBoost}}, .min = min, .max = max});
+  }
+  return slots;
+}
+
 }  // namespace
 
 TEST(PhrasePositionsTest, adjacent_terms) {
@@ -491,6 +625,296 @@ TEST(PhrasePositionsTest, interval_phrase_agrees_with_reference) {
           set.terms.emplace(Bytes(word));
         }
       }
+    }
+
+    SCOPED_TRACE(Describe(doc, slots));
+    const auto expected = Reference(doc, slots);
+    const auto out = Verify(phrase, Doc{absl::StrJoin(doc, " ")});
+    EXPECT_EQ(expected.matched, out.matched);
+    EXPECT_EQ(expected.freq, out.freq);
+  }
+}
+
+TEST(PhrasePositionsTest, interval_phrase_rewinds_across_position_blocks) {
+  const auto repeat = [](std::string_view pattern, size_t n) {
+    std::string text;
+    for (size_t i = 0; i != n; ++i) {
+      absl::StrAppend(&text, pattern, " ");
+    }
+    return text;
+  };
+  {
+    irs::ByPhraseOptions phrase;
+    phrase.push_back<irs::ByTermOptions>().term = Bytes("a");
+    phrase.push_back<irs::ByTermOptions>(1, 2).term = Bytes("b");
+    phrase.push_back<irs::ByTermOptions>(1, 1).term = Bytes("c");
+    const auto out = Verify(phrase, Doc{repeat("a b b c x", 150)});
+    EXPECT_TRUE(out.matched);
+    EXPECT_EQ(150U, out.freq);
+  }
+  {
+    irs::ByPhraseOptions phrase;
+    phrase.push_back<irs::ByTermOptions>().term = Bytes("a");
+    phrase.push_back<irs::ByTermOptions>(1, 3).term = Bytes("b");
+    const auto out = Verify(phrase, Doc{repeat("a b b b x", 100)});
+    EXPECT_TRUE(out.matched);
+    EXPECT_EQ(300U, out.freq);
+  }
+}
+
+TEST(PhrasePositionsTest,
+     interval_phrase_rewinds_in_document_starting_mid_block) {
+  const auto slots = Chain({{"a", 0, 0}, {"b", 1, 3}});
+  const std::string target = Repeat("a b b b x", 100);
+  ExpectDocsAgreeWithReference(slots, std::vector{Repeat("a b", 100), target});
+  ExpectDocsAgreeWithReference(
+    slots, std::vector{Repeat("a b", 100), target, Repeat("a b", 30), target});
+  ExpectDocsAgreeWithReference(
+    slots, std::vector{Repeat("a b", 255), target, Repeat("a b", 256), target});
+  ExpectDocsAgreeWithReference(
+    slots, std::vector{Repeat("a b", 100), Repeat("a x", 40), target,
+                       Repeat("a b b", 90), Repeat("b a b", 70)});
+  const auto triple = Chain({{"a", 0, 0}, {"b", 1, 2}, {"b", 1, 1}});
+  ExpectDocsAgreeWithReference(
+    triple, std::vector{Repeat("a b b", 100), Repeat("a b b b x", 100)});
+}
+
+TEST(PhrasePositionsTest, interval_phrase_rewinds_across_position_groups) {
+  const auto slots = Chain({{"a", 0, 0}, {"b", 1, 3}});
+  const std::string target = Repeat("a b b b x", 100);
+  ExpectDocsAgreeWithReference(
+    slots, std::vector{Repeat("a b", 15 * 256 + 100), target});
+  ExpectDocsAgreeWithReference(
+    slots, std::vector{Repeat("a b", 15 * 256 + 100), target,
+                       Repeat("a b b", 50), target, Repeat("a b b b x", 7)});
+  ExpectDocsAgreeWithReference(
+    slots, std::vector{Repeat("a b", 1000), Repeat("a b", 2000),
+                       Repeat("a b", 940), target, Repeat("a b", 11), target});
+  ExpectDocsAgreeWithReference(
+    slots, std::vector{Repeat("a b", 16 * 256 - 1), target, Repeat("a b", 300),
+                       target});
+  ExpectDocsAgreeWithReference(
+    slots, std::vector{Repeat("a b", 16 * 256), target,
+                       Repeat("a b", 15 * 256 + 255), target});
+  const auto triple = Chain({{"a", 0, 0}, {"b", 1, 2}, {"b", 1, 1}});
+  ExpectDocsAgreeWithReference(
+    triple,
+    std::vector{Repeat("a b b", 15 * 256 + 100), Repeat("a b b b x", 150)});
+}
+
+TEST(PhrasePositionsTest,
+     interval_phrase_crossing_leader_agrees_with_reference) {
+  const auto slots = Chain({{"a", 0, 0}, {"b", 1, 3}});
+  const std::string target = Repeat("a b b b x", 100);
+  ExpectDocsAgreeWithReference(
+    slots, std::vector{Repeat("a x", 100), target, Repeat("a x", 20), target});
+  ExpectDocsAgreeWithReference(
+    slots, std::vector{Repeat("a x", 15 * 256 + 100), target,
+                       Repeat("a x", 3000), target});
+  const auto reversed = Chain({{"b", 0, 0}, {"a", 1, 3}});
+  ExpectDocsAgreeWithReference(
+    reversed,
+    std::vector{Repeat("b x", 15 * 256 + 100), Repeat("b a a a x", 100),
+                Repeat("b x", 200), Repeat("b a a a x", 100)});
+}
+
+TEST(PhrasePositionsTest, interval_phrase_many_documents_agree_with_reference) {
+  constexpr std::string_view kWords[] = {"a", "b", "c", "d", "x"};
+  std::mt19937 rng{20261023};
+  for (size_t round = 0; round != 24; ++round) {
+    std::array<int, std::size(kWords)> weights;
+    for (auto& weight : weights) {
+      weight = std::uniform_int_distribution{1, 6}(rng);
+    }
+    std::discrete_distribution<size_t> pick{weights.begin(), weights.end()};
+    std::vector<std::string> docs(
+      std::uniform_int_distribution<size_t>{3, 10}(rng));
+    for (auto& doc : docs) {
+      const auto length = std::uniform_int_distribution<size_t>{50, 1500}(rng);
+      std::vector<std::string_view> words(length);
+      for (auto& word : words) {
+        word = kWords[pick(rng)];
+      }
+      doc = absl::StrJoin(words, " ");
+    }
+
+    std::vector<ReferenceSlot> slots(
+      std::uniform_int_distribution<size_t>{2, 4}(rng));
+    std::uniform_int_distribution<size_t> term{0, 3};
+    for (size_t s = 0; s != slots.size(); ++s) {
+      auto& slot = slots[s];
+      if (s != 0) {
+        slot.min = std::uniform_int_distribution<uint32_t>{0, 3}(rng);
+        slot.max =
+          slot.min + std::uniform_int_distribution<uint32_t>{0, 2}(rng);
+      }
+      slot.words.emplace_back(kWords[term(rng)], irs::kNoBoost);
+    }
+    WidenOneGap(slots, rng);
+
+    SCOPED_TRACE(
+      absl::StrCat("round ", round, " phrase:", Describe({}, slots)));
+    ExpectDocsAgreeWithReference(slots, docs);
+  }
+}
+
+using OffsetRanges = std::vector<std::pair<uint32_t, uint32_t>>;
+
+std::vector<OffsetRanges> OffsetsPerDoc(const irs::ByPhraseOptions& phrase,
+                                        std::span<const std::string> docs) {
+  irs::MemoryDirectory dir;
+  const auto reader = IndexDocs(dir, docs, true);
+  EXPECT_EQ(1U, reader->size());
+  const auto filter = LowerPhrase(phrase);
+  tests::PreparedFilter prepared{filter, *reader};
+  std::vector<OffsetRanges> out(docs.size());
+  for (size_t i = 0; i != prepared.size(); ++i) {
+    const auto* query =
+      dynamic_cast<const irs::FixedPhraseQuery*>(prepared.Query(i));
+    EXPECT_NE(nullptr, query);
+    if (!query) {
+      continue;
+    }
+    auto cursor = prepared.Execute(i);
+    auto offs = irs::offsets::Make(*query);
+    EXPECT_NE(nullptr, offs);
+    if (!offs) {
+      continue;
+    }
+    while (!irs::doc_limits::eof(cursor->Next())) {
+      const auto doc = cursor->Value();
+      auto& ranges = out[doc - irs::doc_limits::min()];
+      std::array<irs::offsets::Range, 16> buf;
+      for (;;) {
+        const auto n = offs->Run(doc, buf);
+        for (size_t k = 0; k != n; ++k) {
+          ranges.emplace_back(buf[k].start, buf[k].end);
+        }
+        if (n != buf.size()) {
+          break;
+        }
+      }
+      absl::c_sort(ranges);
+    }
+  }
+  return out;
+}
+
+OffsetRanges ExpectedOffsets(const std::string& doc,
+                             std::span<const ReferenceSlot> slots) {
+  struct Token {
+    std::string_view word;
+    uint32_t start;
+    uint32_t end;
+  };
+  std::vector<Token> tokens;
+  for (const auto word : absl::StrSplit(doc, ' ', absl::SkipEmpty())) {
+    const auto start = static_cast<uint32_t>(word.data() - doc.data());
+    tokens.push_back({word, start, start + static_cast<uint32_t>(word.size())});
+  }
+  const auto first_match = [&](this const auto& self, size_t slot,
+                               size_t prev) -> std::optional<size_t> {
+    if (slot == slots.size()) {
+      return prev;
+    }
+    for (size_t j = prev + slots[slot].min;
+         j <= prev + slots[slot].max && j < tokens.size(); ++j) {
+      if (tokens[j].word == slots[slot].words.front().first) {
+        if (const auto last = self(slot + 1, j)) {
+          return last;
+        }
+      }
+    }
+    return std::nullopt;
+  };
+  OffsetRanges out;
+  for (size_t i = 0; i != tokens.size(); ++i) {
+    if (tokens[i].word == slots.front().words.front().first) {
+      if (const auto last = first_match(1, i)) {
+        out.emplace_back(tokens[i].start, tokens[*last].end);
+      }
+    }
+  }
+  absl::c_sort(out);
+  return out;
+}
+
+void ExpectOffsetsAgreeWithText(std::span<const std::string> docs,
+                                std::span<const size_t> targets) {
+  const auto slots =
+    Chain({{"a", 0, 0}, {"b", 1, 3}, {"c", 1, 1}, {"d", 1, 1}});
+  const auto all = OffsetsPerDoc(TermPhrase(slots), docs);
+  ASSERT_EQ(docs.size(), all.size());
+  for (size_t i = 0; i != docs.size(); ++i) {
+    SCOPED_TRACE(absl::StrCat("document ", i));
+    EXPECT_EQ(ExpectedOffsets(docs[i], slots), all[i]);
+  }
+  for (const auto target : targets) {
+    SCOPED_TRACE(absl::StrCat("target ", target, " alone"));
+    const auto alone =
+      OffsetsPerDoc(TermPhrase(slots), docs.subspan(target, 1));
+    ASSERT_EQ(1U, alone.size());
+    EXPECT_EQ(alone.front(), all[target]);
+    EXPECT_FALSE(alone.front().empty());
+  }
+}
+
+TEST(PhrasePositionsTest, interval_phrase_offsets_rewind_across_blocks) {
+  constexpr std::string_view kPattern = "a b x b c x d a b c d x";
+  const std::string target = Repeat(kPattern, 300);
+  {
+    const std::vector docs{Repeat(kPattern, 100), target, Repeat(kPattern, 30),
+                           target};
+    ExpectOffsetsAgreeWithText(docs, std::vector<size_t>{1, 3});
+  }
+  {
+    const std::vector docs{Repeat(kPattern, 255), target, Repeat(kPattern, 256),
+                           target};
+    ExpectOffsetsAgreeWithText(docs, std::vector<size_t>{1, 3});
+  }
+}
+
+TEST(PhrasePositionsTest, interval_phrase_offsets_rewind_across_groups) {
+  constexpr std::string_view kPattern = "a b x b c x d a b c d x";
+  const std::string target = Repeat(kPattern, 300);
+  const std::vector docs{Repeat(kPattern, 1970), target, Repeat(kPattern, 50),
+                         target};
+  ExpectOffsetsAgreeWithText(docs, std::vector<size_t>{1, 3});
+}
+
+TEST(PhrasePositionsTest, interval_phrase_long_documents_agree_with_reference) {
+  constexpr std::string_view kWords[] = {"a", "b", "c", "d", "x"};
+  std::mt19937 rng{20261022};
+  for (size_t round = 0; round != 24; ++round) {
+    std::array<int, std::size(kWords)> weights;
+    for (auto& weight : weights) {
+      weight = std::uniform_int_distribution{1, 6}(rng);
+    }
+    std::discrete_distribution<size_t> pick{weights.begin(), weights.end()};
+    std::vector<std::string_view> doc(
+      std::uniform_int_distribution<size_t>{300, 900}(rng));
+    for (auto& word : doc) {
+      word = kWords[pick(rng)];
+    }
+
+    std::vector<ReferenceSlot> slots(
+      std::uniform_int_distribution<size_t>{2, 4}(rng));
+    std::uniform_int_distribution<size_t> term{0, 3};
+    for (size_t s = 0; s != slots.size(); ++s) {
+      auto& slot = slots[s];
+      if (s != 0) {
+        slot.min = std::uniform_int_distribution<uint32_t>{0, 3}(rng);
+        slot.max =
+          slot.min + std::uniform_int_distribution<uint32_t>{0, 2}(rng);
+      }
+      slot.words.emplace_back(kWords[term(rng)], irs::kNoBoost);
+    }
+    WidenOneGap(slots, rng);
+
+    irs::ByPhraseOptions phrase;
+    for (size_t s = 0; s != slots.size(); ++s) {
+      Push<irs::ByTermOptions>(phrase, slots[s], s == 0).term =
+        Bytes(slots[s].words.front().first);
     }
 
     SCOPED_TRACE(Describe(doc, slots));
