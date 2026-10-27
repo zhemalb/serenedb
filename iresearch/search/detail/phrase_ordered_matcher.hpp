@@ -524,7 +524,6 @@ class PhraseOrderedMatcher {
     _levels.resize(_pos.size() - 1);
   }
 
-  template<bool Ordered = false>
   IRS_FORCE_INLINE bool Match() {
     _phrase_freq = 0;
     if constexpr (Offs) {

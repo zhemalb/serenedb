@@ -336,9 +336,8 @@ class PhraseMatcher {
     }
   }
 
-  template<bool Ordered = false>
   IRS_FORCE_INLINE bool Match() {
-    _phrase_freq = NextPosition<Ordered>();
+    _phrase_freq = NextPosition();
     return _phrase_freq != 0;
   }
 
@@ -391,7 +390,6 @@ class PhraseMatcher {
   }
 
  private:
-  template<bool Ordered = false>
   IRS_FORCE_INLINE uint32_t NextPosition() {
     if constexpr (HasBoost) {
       _phrase_boost = 0.f;
@@ -404,21 +402,13 @@ class PhraseMatcher {
           return NextPositionRarest();
         }
       }
-      return NextPositionGeneric<Ordered>();
+      return NextPositionGeneric();
     } else {
-      return NextPositionOptimized<Ordered>();
+      return NextPositionOptimized();
     }
   }
 
-  uint32_t LeadFreq() {
-    if constexpr (kRarestLead) {
-      if (_pos.size() >= kRarestLeadSlots) {
-        return Rarest()->first->DocFreq();
-      }
-    }
-    OrderByDocFreq();
-    return _pos.front().first->DocFreq();
-  }
+  uint32_t LeadFreq() { return Rarest()->first->DocFreq(); }
 
   IRS_FORCE_INLINE void TakeBoost() noexcept {
     if constexpr (HasBoost) {
@@ -442,11 +432,8 @@ class PhraseMatcher {
     return lhs.first->DocFreq() < rhs.first->DocFreq();
   };
 
-  template<bool Ordered = false>
   uint32_t NextPositionGeneric() {
-    if constexpr (!Ordered) {
-      OrderByDocFreq();
-    }
+    OrderByDocFreq();
     auto& lead = *_pos.front().first;
     lead.next();
     auto lead_it = std::begin(_pos);
@@ -713,15 +700,19 @@ class PhraseMatcher {
         _reversed = !_reversed;
       }
     } else {
-      absl::c_sort(_pos, kByDocFreq);
+      for (auto it = _pos.begin() + 1, end = _pos.end(); it != end; ++it) {
+        const auto freq = it->first->DocFreq();
+        for (auto hole = it;
+             hole != _pos.begin() && (hole - 1)->first->DocFreq() > freq;
+             --hole) {
+          std::swap(*hole, *(hole - 1));
+        }
+      }
     }
   }
 
-  template<bool Ordered = false>
   uint32_t NextPositionOptimized() {
-    if constexpr (!Ordered) {
-      OrderByDocFreq();
-    }
+    OrderByDocFreq();
     auto begin = _pos.begin();
     auto end = _pos.end();
 
