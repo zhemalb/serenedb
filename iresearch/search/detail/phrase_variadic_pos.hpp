@@ -21,6 +21,7 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <limits>
 #include <numeric>
 #include <type_traits>
@@ -44,7 +45,7 @@ class PhraseVariadicPositions {
   static constexpr bool kHasBoost = HasBoost;
 
   explicit PhraseVariadicPositions(uint32_t count)
-    : _live{count}, _boosts{count} {}
+    : _live{count}, _boosts{count}, _runs(size_t{count} + 1) {}
 
   void On(doc_id_t) noexcept {
     _value = pos_limits::invalid();
@@ -135,9 +136,69 @@ class PhraseVariadicPositions {
     _value = pos_limits::invalid();
   }
 
+  uint32_t Read(PosAttr::value_t* out, [[maybe_unused]] score_t* boosts) {
+    _value = pos_limits::eof();
+    if (_size == 1) [[likely]] {
+      const auto count = _live[0]->ReadPositions(out);
+      if constexpr (HasBoost) {
+        std::fill_n(boosts, count, _boosts[0]);
+      }
+      return count;
+    }
+    uint32_t total = 0;
+    PosAttr::value_t max = pos_limits::invalid();
+    for (uint32_t i = 0; i != _size; ++i) {
+      _runs[i] = total;
+      const auto count = _live[i]->ReadPositions(out + total);
+      if (count != 0) {
+        max = std::max(max, out[total + count - 1]);
+      }
+      total += count;
+    }
+    _runs[_size] = total;
+    const size_t words = max / kBits + 1;
+    if (_bits.size() < words) {
+      _bits.resize(words);
+    }
+    std::fill_n(_bits.data(), words, 0);
+    if constexpr (HasBoost) {
+      if (_boost_at.size() <= max) {
+        _boost_at.resize(size_t{max} + 1);
+      }
+    }
+    for (uint32_t i = 0; i != _size; ++i) {
+      for (uint32_t j = _runs[i], end = _runs[i + 1]; j != end; ++j) {
+        const auto pos = out[j];
+        auto& word = _bits[pos / kBits];
+        const auto mask = uint64_t{1} << (pos % kBits);
+        if constexpr (HasBoost) {
+          if ((word & mask) == 0) {
+            _boost_at[pos] = _boosts[i];
+          }
+        }
+        word |= mask;
+      }
+    }
+    uint32_t count = 0;
+    for (size_t w = 0; w != words; ++w) {
+      for (auto bits = _bits[w]; bits != 0; bits &= bits - 1) {
+        const auto pos = static_cast<PosAttr::value_t>(
+          w * kBits + static_cast<size_t>(std::countr_zero(bits)));
+        out[count] = pos;
+        if constexpr (HasBoost) {
+          boosts[count] = _boost_at[pos];
+        }
+        ++count;
+      }
+    }
+    return count;
+  }
+
   uint32_t DocFreq() { return _freq; }
 
  private:
+  static constexpr size_t kBits = std::numeric_limits<uint64_t>::digits;
+
   IRS_FORCE_INLINE void Won([[maybe_unused]] uint32_t i) noexcept {
     if constexpr (kOffsets) {
       const auto* offs = irs::get<OffsAttr>(*_live[i]);
@@ -152,6 +213,9 @@ class PhraseVariadicPositions {
   containers::Fixed<Position*> _live;
   [[no_unique_address]] utils::Need<HasBoost, containers::Fixed<score_t>>
     _boosts;
+  std::vector<uint64_t> _bits;
+  std::vector<uint32_t> _runs;
+  [[no_unique_address]] utils::Need<HasBoost, std::vector<score_t>> _boost_at;
   uint32_t _size = 0;
   uint32_t _freq = 0;
   PosAttr::value_t _value = pos_limits::invalid();
@@ -320,6 +384,10 @@ struct TermPositionTraits<
   }
 
   static void ResetPos(const T& pos) { pos.first->reset(); }
+
+  static uint32_t Read(T& pos, PosAttr::value_t* out, score_t* boosts) {
+    return pos.first->Read(out, boosts);
+  }
 
   static const OffsAttr& Offsets(const T& pos) noexcept {
     return pos.first->Offsets();
