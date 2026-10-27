@@ -263,14 +263,15 @@ irs::ByPhraseOptions::TokenizerFactory TextOf() {
 
 bool CheckText(irs::PhraseCheck& check, std::string_view text,
                irs::PhraseVerdict& verdict,
-               const duckdb::LogicalType& type = duckdb::LogicalType::VARCHAR) {
+               const duckdb::LogicalType& type = duckdb::LogicalType::VARCHAR,
+               uint32_t anchors = 0) {
   duckdb::DataChunk chunk;
   chunk.Initialize(duckdb::Allocator::DefaultAllocator(), {type});
   chunk.SetChildCardinality(1);
   duckdb::FlatVector::GetDataMutable<duckdb::string_t>(chunk.data[0])[0] = {
     text.data(), static_cast<uint32_t>(text.size())};
   check.Bind(chunk.data[0], 1);
-  verdict = check.Check(0);
+  verdict = check.Check(0, anchors);
   return verdict.freq != 0;
 }
 
@@ -574,6 +575,46 @@ TEST(PhraseCheckTest, open_gap_after_the_anchor_scans_a_row_once) {
   EXPECT_FALSE(
     Check<ProgressWords>(phrase, text, false, std::nullopt, {}).matched);
   EXPECT_EQ(5001U, ProgressWords::emitted);
+}
+
+TEST(PhraseCheckTest, wide_windows_with_dense_anchors_scan_once) {
+  irs::ByPhraseOptions phrase;
+  PushTerm(phrase, "a", 0, 0);
+  PushTerm(phrase, "b", 1, 500);
+  const irs::CompiledPhrase compiled{phrase, {}, {}};
+  ASSERT_TRUE(compiled.anchor);
+  EXPECT_EQ(0U, compiled.anchor->slot);
+  std::string text;
+  for (size_t i = 0; i != 200; ++i) {
+    absl::StrAppend(&text, "a x x x x x x x x b ");
+  }
+  irs::PhraseCheck check{compiled, TextOf<ProgressWords>(), true};
+  irs::PhraseVerdict verdict;
+  ProgressWords::emitted = 0;
+  EXPECT_TRUE(
+    CheckText(check, text, verdict, duckdb::LogicalType::VARCHAR, 200));
+  EXPECT_EQ(2000U, ProgressWords::emitted);
+  uint32_t expected = 0;
+  for (uint32_t a = 0; a != 200; ++a) {
+    for (uint32_t b = a; b != 200 && (b - a) * 10 + 9 <= 500; ++b) {
+      ++expected;
+    }
+  }
+  EXPECT_EQ(expected, verdict.freq);
+}
+
+TEST(PhraseCheckTest, wide_windows_with_sparse_anchors_stop_at_the_last) {
+  irs::ByPhraseOptions phrase;
+  PushTerm(phrase, "a", 0, 0);
+  PushTerm(phrase, "b", 1, 500);
+  const irs::CompiledPhrase compiled{phrase, {}, {}};
+  irs::PhraseCheck check{compiled, TextOf<ProgressWords>(), true};
+  irs::PhraseVerdict verdict;
+  ProgressWords::emitted = 0;
+  const auto text = absl::StrCat("b x a x b ", Repeat("x", 5000));
+  EXPECT_TRUE(CheckText(check, text, verdict, duckdb::LogicalType::VARCHAR, 1));
+  EXPECT_EQ(1U, verdict.freq);
+  EXPECT_LT(ProgressWords::emitted, 2000U);
 }
 
 TEST(PhraseCheckTest, open_gaps_take_stacked_alternatives) {
