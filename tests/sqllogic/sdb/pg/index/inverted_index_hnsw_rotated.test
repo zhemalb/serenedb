@@ -417,11 +417,32 @@ statement ok
 SET sdb_hnsw_ef_search = 2000;
 
 query
+SELECT count(*) FROM (
+  (SELECT id FROM rot_sq8 WHERE emb <#> rot_vec(900.5) < -12)
+  EXCEPT (SELECT i FROM range(5000) t(i) WHERE rot_vec(i) <#> rot_vec(900.5) < -12)) t;
+----
+count
+0
+
+query
+SELECT (SELECT count(*) FROM rot_sq8 WHERE emb <#> rot_vec(900.5) < -12) * 10
+    >= (SELECT count(*) FROM range(5000) t(i) WHERE rot_vec(i) <#> rot_vec(900.5) < -12) * 9 AS recall;
+----
+recall
+t
+
+statement ok
+SET sdb_ann_force_exact = on;
+
+query
 SELECT (SELECT count(*) FROM rot_sq8 WHERE emb <#> rot_vec(900.5) < -12)
      = (SELECT count(*) FROM range(5000) t(i) WHERE rot_vec(i) <#> rot_vec(900.5) < -12) AS same;
 ----
 same
 t
+
+statement ok
+RESET sdb_ann_force_exact;
 
 statement ok
 VACUUM (COMPACT_TABLE) rot_sq8;
