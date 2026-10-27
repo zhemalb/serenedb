@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include <absl/algorithm/container.h>
+
 #include <utility>
 
 #include "iresearch/analysis/token_attributes.hpp"
@@ -34,6 +36,7 @@
 #include "iresearch/search/top/pruned_leaf.hpp"
 #include "iresearch/search/top/root.hpp"
 #include "iresearch/utils/attribute_provider.hpp"
+#include "iresearch/utils/empty.hpp"
 #include "iresearch/utils/type_limits.hpp"
 
 namespace irs::top {
@@ -42,9 +45,25 @@ template<typename Slots, typename Table>
 class PrunedPhrase : public Root {
   static_assert(Slots::kHasFreqBound,
                 "a phrase with no bound cannot be pruned");
-  static_assert(
-    !requires(const Slots& slots) { slots.Scale(); },
-    "a bound on the frequency does not bound a scaled score");
+
+  static constexpr bool kHasScale = requires(const Slots& s) { s.Scale(); };
+
+  struct Provider final : AttributeProvider {
+    Attribute* GetMutable(TypeInfo::type_id type) noexcept final {
+      if (type == irs::Type<FreqBlockAttr>::id()) {
+        return &freq;
+      }
+      if constexpr (kHasScale) {
+        if (type == irs::Type<ScaleBlockAttr>::id()) {
+          return &scale;
+        }
+      }
+      return nullptr;
+    }
+
+    FreqBlockAttr freq;
+    [[no_unique_address]] utils::Need<kHasScale, ScaleBlockAttr> scale;
+  };
 
   static constexpr uint32_t kWindow = 64;
   static constexpr uint32_t kMaxInterval = 64;
@@ -58,6 +77,10 @@ class PrunedPhrase : public Root {
       _fetcher{*args.fetcher},
       _admit{table} {
     _provider.freq.value = _freqs;
+    if constexpr (kHasScale) {
+      _provider.scale.value = _scales;
+      absl::c_fill(_scales, kNoBoost);
+    }
     SDB_ASSERT(args.scorer != nullptr);
     _score = args.scorer->PrepareScorer({
       .segment = segment,
@@ -148,6 +171,9 @@ class PrunedPhrase : public Root {
       }
       _docs[_batch] = doc;
       _freqs[_batch] = _slots.Freq();
+      if constexpr (kHasScale) {
+        _scales[_batch] = _slots.Scale();
+      }
       if (++_batch == kScoreBlock) {
         _fetcher.FetchScoreBlock(std::span<const doc_id_t, kScoreBlock>{_docs});
         _score.ScoreBlock(_scores);
@@ -161,6 +187,9 @@ class PrunedPhrase : public Root {
   doc_id_t BoundFirst(doc_id_t doc, doc_id_t end,
                       LoserScoreCollector& collector) {
     FlushBatch(collector);
+    if constexpr (kHasScale) {
+      _scales[0] = kNoBoost;
+    }
     for (; doc < end && _seen != kWindow; doc = _slots.Next(doc)) {
       ++_seen;
       const auto bound = _slots.FreqBound();
@@ -174,8 +203,14 @@ class PrunedPhrase : public Root {
       if (!_slots.MatchOrdered(doc)) {
         continue;
       }
-      if (const auto freq = _slots.Freq(); freq != bound) {
-        SDB_ASSERT(freq < bound);
+      const auto freq = _slots.Freq();
+      SDB_ASSERT(freq <= bound);
+      if constexpr (kHasScale) {
+        _freqs[0] = freq;
+        _scales[0] = _slots.Scale();
+        score = _score.Score();
+        _scales[0] = kNoBoost;
+      } else if (freq != bound) {
         _freqs[0] = freq;
         score = _score.Score();
       }
@@ -206,8 +241,9 @@ class PrunedPhrase : public Root {
   ABSL_CACHELINE_ALIGNED doc_id_t _docs[kScoreBlock];
   ABSL_CACHELINE_ALIGNED score_t _scores[kScoreBlock];
   ABSL_CACHELINE_ALIGNED uint32_t _freqs[kScoreBlock];
+  [[no_unique_address]] utils::Need<kHasScale, score_t[kScoreBlock]> _scales{};
   Slots _slots;
-  irs::detail::LeafProvider _provider;
+  Provider _provider;
   ScoreFunction _score;
   ScoreFunction _bound_func;
   ScoreBoundSource::ptr _bound_source;

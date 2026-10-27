@@ -31,6 +31,7 @@
 #include "iresearch/analysis/token_sinks.hpp"
 #include "iresearch/analysis/tokenizer.hpp"
 #include "iresearch/search/detail/compiled_phrase.hpp"
+#include "iresearch/search/detail/phrase_ordered_matcher.hpp"
 #include "iresearch/search/detail/phrase_slop_matcher.hpp"
 #include "iresearch/search/detail/row_values.hpp"
 #include "iresearch/search/filters/phrase_filter.hpp"
@@ -63,6 +64,7 @@ class PhraseCheck final : public TokenConsumer {
   enum class Route : uint8_t {
     Anchor,
     Automaton,
+    Earliest,
     Positions,
   };
 
@@ -143,6 +145,26 @@ class PhraseCheck final : public TokenConsumer {
     uint32_t _at = 0;
   };
 
+  class EarliestMatch {
+   public:
+    void Reset() noexcept {
+      _next = 0;
+      _last = 0;
+      _at = 0;
+      _accepted.clear();
+    }
+    void Feed(const TokenBatch& batch, uint32_t from, State& state);
+    PhraseVerdict Finish(State& state);
+
+   private:
+    void Resolve(State& state);
+
+    std::vector<uint32_t> _accepted;
+    uint32_t _next = 0;
+    uint32_t _at = 0;
+    uint64_t _last = 0;
+  };
+
   class PositionsMatch {
    public:
     void Reset(size_t slots);
@@ -158,6 +180,8 @@ class PhraseCheck final : public TokenConsumer {
     std::vector<std::vector<PosAttr::value_t>> _slots;
     std::vector<Way> _valid;
     std::vector<Way> _next;
+    std::vector<detail::ordered::Gap> _gaps;
+    detail::ordered::Scratch _ordered;
     detail::slop::MatchScratch _scratch;
   };
 
@@ -167,6 +191,8 @@ class PhraseCheck final : public TokenConsumer {
         return visit(_anchor);
       case Route::Automaton:
         return visit(_automaton);
+      case Route::Earliest:
+        return visit(_earliest);
       case Route::Positions:
         return visit(_positions);
     }
@@ -182,10 +208,12 @@ class PhraseCheck final : public TokenConsumer {
   RowValues _rows;
   AnchorMatch _anchor;
   AutomatonMatch _automaton;
+  EarliestMatch _earliest;
   PositionsMatch _positions;
   State _state;
   Route _route = Route::Anchor;
   bool _dense;
+  bool _all_open = false;
   uint32_t _last_pos = 0;
   uint32_t _value_base = 0;
   uint32_t _fed = 0;

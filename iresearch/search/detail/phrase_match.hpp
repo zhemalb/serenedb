@@ -28,12 +28,16 @@ enum class PhraseMatch : uint8_t {
   Plain,
   Intervals,
   Slop,
+  Ordered,
 };
 
 template<typename Query>
 PhraseMatch MatchOf(const Query& query) noexcept {
   if (query.slop != 0) {
     return PhraseMatch::Slop;
+  }
+  if (query.has_open) {
+    return PhraseMatch::Ordered;
   }
   return query.has_intervals ? PhraseMatch::Intervals : PhraseMatch::Plain;
 }
@@ -43,6 +47,8 @@ auto ResolveMatch(const Query& query, F&& f) {
   switch (MatchOf(query)) {
     case PhraseMatch::Slop:
       return f.template operator()<PhraseMatch::Slop>();
+    case PhraseMatch::Ordered:
+      return f.template operator()<PhraseMatch::Ordered>();
     case PhraseMatch::Intervals:
       return f.template operator()<PhraseMatch::Intervals>();
     case PhraseMatch::Plain:
