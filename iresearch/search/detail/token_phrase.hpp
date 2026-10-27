@@ -132,8 +132,8 @@ class PhraseCheck final : public TokenConsumer {
     PhraseVerdict Finish(State& state);
 
    private:
-    void Step(uint64_t mask, State& state);
-    void Flush(State& state);
+    static uint64_t Step(const CompiledPhrase::Automaton& layout, uint64_t bits,
+                         uint64_t mask) noexcept;
 
     uint64_t _bits = 0;
     uint64_t _mask = 0;

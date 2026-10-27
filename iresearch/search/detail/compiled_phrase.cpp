@@ -24,6 +24,7 @@
 #include <absl/functional/overload.h>
 
 #include <algorithm>
+#include <bit>
 #include <limits>
 #include <span>
 #include <utility>
@@ -332,11 +333,20 @@ CompiledPhrase::CompiledPhrase(const ByPhraseOptions& phrase,
     ++part;
   }
   accept.Reserve(terms);
+  sieve.words.assign(
+    std::clamp<size_t>(std::bit_ceil(terms.size() * Sieve::kBitsPerTerm / 64),
+                       2, Sieve::kMaxWords),
+    0);
+  sieve.shift =
+    64 - static_cast<uint32_t>(std::countr_zero(sieve.words.size()));
   for (size_t i = 0; i != terms.size(); ++i) {
     auto& listed = accept[terms[i]].slots;
     if (listed.empty() || listed.back() != term_slots[i]) {
       listed.emplace_back(term_slots[i]);
     }
+    const auto hash =
+      SieveHash(MakeTermView(ViewCast<char>(bytes_view{terms[i]})));
+    sieve.words[hash >> sieve.shift] |= SieveBits(hash);
   }
   for (uint32_t i = 0; i != n; ++i) {
     if (word_of[i]) {
@@ -363,20 +373,10 @@ bool AcceptsTerm(const CompiledPhrase& phrase, const CompiledPhrase::Slot& slot,
   if (slot.pattern) {
     return slot.pattern->Accepts(AsBytesView(term));
   }
-  const auto* found = phrase.accept.Find(term);
+  const auto* found = FindAccepted(phrase, term);
   return found &&
          absl::c_linear_search(
            found->slots, static_cast<uint32_t>(&slot - phrase.slots.data()));
-}
-
-uint64_t MaskOf(const CompiledPhrase& phrase, const duckdb::string_t& term) {
-  uint64_t mask = 0;
-  if (const auto* found = phrase.accept.Find(term)) {
-    mask = found->mask;
-  }
-  ForEachPattern(phrase, term,
-                 [&](uint32_t slot) { mask |= phrase.slots[slot].bit; });
-  return mask;
 }
 
 }  // namespace irs
