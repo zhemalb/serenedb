@@ -100,8 +100,9 @@ PhraseCheck::PhraseCheck(const CompiledPhrase& phrase,
 }
 
 PhraseVerdict PhraseCheck::Check(duckdb::idx_t row, uint32_t anchors) {
-  Start(static_cast<bool>(_state.phrase->anchor) &&
-          !(_state.phrase->open && _state.count),
+  const auto& phrase = *_state.phrase;
+  Start(phrase.anchor && !(phrase.open && _state.count) &&
+          !(_all_open && phrase.anchor->right >= pos_limits::kOpenGap),
         anchors);
   Analyze(row);
   if (_route == Route::Anchor) {

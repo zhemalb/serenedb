@@ -537,6 +537,45 @@ TEST(PhraseCheckTest, open_gaps_scan_everything_without_a_match) {
   EXPECT_EQ(5002U, ProgressWords::emitted);
 }
 
+TEST(PhraseCheckTest, open_gaps_on_either_side_of_the_anchor_stop_early) {
+  struct Case {
+    std::string_view first;
+    std::string_view second;
+    uint32_t anchor = 0;
+  };
+  constexpr Case kCases[] = {
+    {.first = "aa", .second = "b", .anchor = 0},
+    {.first = "a", .second = "bb", .anchor = 1},
+  };
+  for (const auto& c : kCases) {
+    SCOPED_TRACE(c.anchor);
+    irs::ByPhraseOptions phrase;
+    PushTerm(phrase, c.first, 0, 0);
+    PushTerm(phrase, c.second, 1, irs::pos_limits::kOpenGap);
+    const irs::CompiledPhrase compiled{phrase, {}, {}};
+    ASSERT_TRUE(compiled.anchor);
+    EXPECT_EQ(c.anchor, compiled.anchor->slot);
+    const auto text =
+      absl::StrCat(c.first, " x ", c.second, " ", Repeat("x", 20'000));
+    ProgressWords::emitted = 0;
+    const auto found =
+      Check<ProgressWords>(phrase, text, false, std::nullopt, {});
+    EXPECT_TRUE(found.matched);
+    EXPECT_LT(ProgressWords::emitted, 1000U);
+  }
+}
+
+TEST(PhraseCheckTest, open_gap_after_the_anchor_scans_a_row_once) {
+  irs::ByPhraseOptions phrase;
+  PushTerm(phrase, "aa", 0, 0);
+  PushTerm(phrase, "b", 1, irs::pos_limits::kOpenGap);
+  ProgressWords::emitted = 0;
+  const auto text = absl::StrCat("b ", Repeat("aa", 5000));
+  EXPECT_FALSE(
+    Check<ProgressWords>(phrase, text, false, std::nullopt, {}).matched);
+  EXPECT_EQ(5001U, ProgressWords::emitted);
+}
+
 TEST(PhraseCheckTest, open_gaps_take_stacked_alternatives) {
   irs::ByPhraseOptions phrase;
   PushTerm(phrase, "a", 0, 0);
