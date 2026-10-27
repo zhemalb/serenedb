@@ -131,68 +131,115 @@ IRS_FORCE_INLINE inline size_t ExtendWordRun(const byte_type* b, size_t i,
   return i;
 }
 
-IRS_FORCE_INLINE inline uint32_t BridgeMask(const WordBridgeMasks& m) noexcept {
-  return (m.mid_al & (m.alpha << 1) & (m.alpha >> 1)) |
-         (m.mid_nu & (m.digit << 1) & (m.digit >> 1));
+IRS_FORCE_INLINE inline WordBridgeMasks ClassifyWordBridgeAt(
+  const byte_type* b, size_t n, size_t at) noexcept {
+  if (at >= n) {
+    return {};
+  }
+  if (n - at >= classify::kClassifyBlock) {
+    return ClassifyWordBridgeBlock(b + at);
+  }
+  return ClassifyWordBridge(classify::LoadPadded(b + at, n - at));
+}
+
+struct WordBridgeChunk {
+  uint64_t word;
+  uint64_t alpha;
+  uint64_t digit;
+  uint64_t mid_al;
+  uint64_t mid_nu;
+};
+
+IRS_FORCE_INLINE inline WordBridgeChunk JoinWordBridge(
+  const WordBridgeMasks& lo, const WordBridgeMasks& hi) noexcept {
+  constexpr auto kShift = classify::kClassifyBlock;
+  return {lo.word | (uint64_t{hi.word} << kShift),
+          lo.alpha | (uint64_t{hi.alpha} << kShift),
+          lo.digit | (uint64_t{hi.digit} << kShift),
+          lo.mid_al | (uint64_t{hi.mid_al} << kShift),
+          lo.mid_nu | (uint64_t{hi.mid_nu} << kShift)};
 }
 
 template<typename Emit, typename Progress = classify::NoProgress>
 IRS_FORCE_INLINE void ScanAsciiRuns(duckdb::string_t value, Emit&& emit,
                                     Progress progress = {}) {
+  constexpr size_t kBlock = classify::kClassifyBlock;
+  constexpr size_t kChunk = 2 * kBlock;
+  constexpr uint64_t kAll = ~uint64_t{0};
   const auto* b = reinterpret_cast<const byte_type*>(value.GetData());
   const size_t n = value.GetSize();
-  size_t i = 0;
-  const auto drain = [&](const WordBridgeMasks& m, size_t blk,
-                         uint32_t slow) IRS_FORCE_INLINE {
-    uint32_t w = m.word;
-    while (w != 0) {
-      const auto s = static_cast<uint32_t>(std::countr_zero(w));
-      const auto len = static_cast<uint32_t>(std::countr_one(w >> s));
-      const size_t start = blk + s;
-      if (s + len == classify::kClassifyBlock) [[unlikely]] {
-        bool has_alpha = (m.alpha >> s) != 0;
-        bool has_digit = (m.digit >> s) != 0;
-        AdvanceWordRun(b, i, n, has_alpha, has_digit);
-        i = ExtendWordRun(b, i, n, has_alpha, has_digit);
-        emit(Segment{static_cast<uint32_t>(start), static_cast<uint32_t>(i),
-                     true, has_alpha, has_digit});
-        return;
+  bool open = false;
+  size_t begin = 0;
+  bool has_alpha = false;
+  bool has_digit = false;
+  uint64_t carry_run = 0;
+  uint64_t carry_alpha = 0;
+  uint64_t carry_digit = 0;
+  size_t base = 0;
+  auto lo = ClassifyWordBridgeAt(b, n, 0);
+  for (;;) {
+    const auto hi = ClassifyWordBridgeAt(b, n, base + kBlock);
+    const auto ahead = ClassifyWordBridgeAt(b, n, base + kChunk);
+    const auto c = JoinWordBridge(lo, hi);
+    const uint64_t next_alpha = ahead.alpha & 1;
+    const uint64_t next_digit = ahead.digit & 1;
+    const uint64_t bridge = (c.mid_al & ((c.alpha << 1) | carry_alpha) &
+                             ((c.alpha >> 1) | (next_alpha << 63))) |
+                            (c.mid_nu & ((c.digit << 1) | carry_digit) &
+                             ((c.digit >> 1) | (next_digit << 63)));
+    const uint64_t run = c.word | bridge;
+    const uint64_t next_run =
+      (ahead.word & 1) |
+      ((ahead.mid_al & 1) & (c.alpha >> 63) & ((ahead.alpha >> 1) & 1)) |
+      ((ahead.mid_nu & 1) & (c.digit >> 63) & ((ahead.digit >> 1) & 1));
+    uint64_t starts = run & ~((run << 1) | carry_run);
+    uint64_t ends = run & ~((run >> 1) | (next_run << 63));
+    if (open) {
+      if (ends == 0) {
+        has_alpha |= c.alpha != 0;
+        has_digit |= c.digit != 0;
+      } else {
+        const auto e = static_cast<uint32_t>(std::countr_zero(ends));
+        const uint64_t mask = kAll >> (63 - e);
+        has_alpha |= (c.alpha & mask) != 0;
+        has_digit |= (c.digit & mask) != 0;
+        emit(Segment{static_cast<uint32_t>(begin),
+                     static_cast<uint32_t>(base + e + 1), true, has_alpha,
+                     has_digit});
+        open = false;
+        ends &= ends - 1;
       }
-      const uint32_t runmask = ((1u << len) - 1) << s;
-      bool has_alpha = (m.alpha & runmask) != 0;
-      bool has_digit = (m.digit & runmask) != 0;
-      const size_t end = start + len;
-      if (((slow >> (s + len)) & 1u) == 0) [[likely]] {
-        emit(Segment{static_cast<uint32_t>(start), static_cast<uint32_t>(end),
-                     true, has_alpha, has_digit});
-        w &= ~runmask;
-        continue;
-      }
-      const size_t extended = ExtendWordRun(b, end, n, has_alpha, has_digit);
-      emit(Segment{static_cast<uint32_t>(start),
-                   static_cast<uint32_t>(extended), true, has_alpha,
-                   has_digit});
-      if (extended != end) [[unlikely]] {
-        i = extended;
-        return;
-      }
-      w &= ~runmask;
     }
-  };
-  while (n - i >= classify::kClassifyBlock) {
-    const auto m = ClassifyWordBridgeBlock(b + i);
-    const size_t blk = i;
-    i = blk + classify::kClassifyBlock;
-    drain(m, blk, BridgeMask(m) | (1u << (classify::kClassifyBlock - 1)));
+    while (ends != 0) {
+      const auto s = static_cast<uint32_t>(std::countr_zero(starts));
+      const auto e = static_cast<uint32_t>(std::countr_zero(ends));
+      const uint64_t mask = (kAll >> (63 - e)) & (kAll << s);
+      emit(Segment{static_cast<uint32_t>(base + s),
+                   static_cast<uint32_t>(base + e + 1), true,
+                   (c.alpha & mask) != 0, (c.digit & mask) != 0});
+      starts &= starts - 1;
+      ends &= ends - 1;
+    }
+    if (starts != 0) {
+      const auto s = static_cast<uint32_t>(std::countr_zero(starts));
+      const uint64_t mask = kAll << s;
+      begin = base + s;
+      has_alpha = (c.alpha & mask) != 0;
+      has_digit = (c.digit & mask) != 0;
+      open = true;
+    }
+    if (base + kChunk >= n) {
+      SDB_ASSERT(!open);
+      return;
+    }
     if (!progress()) {
       return;
     }
-  }
-  while (i < n) {
-    const auto m = ClassifyWordBridge(classify::LoadPadded(b + i, n - i));
-    const size_t blk = i;
-    i = n;
-    drain(m, blk, BridgeMask(m));
+    carry_run = run >> 63;
+    carry_alpha = c.alpha >> 63;
+    carry_digit = c.digit >> 63;
+    base += kChunk;
+    lo = ahead;
   }
 }
 
