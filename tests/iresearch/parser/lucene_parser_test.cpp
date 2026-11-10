@@ -2003,6 +2003,33 @@ TEST_F(LuceneParserTest, PhraseWithGap) {
   EXPECT_EQ(2, phrase.options().size());
 }
 
+TEST_F(LuceneParserTest, PhraseGapOutOfRangeIsRefused) {
+  for (const auto* query :
+       {"\"a 4294967296-* b\"", "\"a 7-* b 4294967296-* c\"",
+        "\"a 4294967295-* b\"", "\"a 1-4294967296 b\"", "\"a 99999999999-1 b\"",
+        "\"a 0-4294967295 b\""}) {
+    SCOPED_TRACE(query);
+    irs::BooleanFilter fresh;
+    irs::ParserContext fresh_ctx{fresh, kFieldId, *tokenizer};
+    fresh_ctx.fields = &any_field;
+    EXPECT_FALSE(irs::ParseQuery(fresh_ctx, query));
+  }
+}
+
+TEST_F(LuceneParserTest, PhraseGapAtTheLimit) {
+  ASSERT_TRUE(irs::ParseQuery(ctx, "\"a 4294967294-* b 0-4294967294 c\""));
+  ASSERT_EQ(1, Optional().filters.size());
+  const auto& phrase =
+    irs::utils::downCast<irs::ByPhrase>(*Optional().filters[0]);
+  ASSERT_EQ(3, phrase.options().size());
+  const auto& b = *std::next(phrase.options().begin());
+  EXPECT_EQ(4294967294U, b.offs_min);
+  EXPECT_EQ(irs::pos_limits::kOpenGap, b.offs_max);
+  const auto& c = *std::next(phrase.options().begin(), 2);
+  EXPECT_EQ(0U, c.offs_min);
+  EXPECT_EQ(4294967294U, c.offs_max);
+}
+
 TEST_F(LuceneParserTest, PhraseWithOpenGap) {
   ASSERT_TRUE(irs::ParseQuery(ctx, "\"alpha 1-* beta\""));
   ASSERT_EQ(1, Optional().filters.size());

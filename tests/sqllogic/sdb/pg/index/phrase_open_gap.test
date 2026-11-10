@@ -502,6 +502,31 @@ a
 21
 
 # ----------------------------------------------------------------------
+# A fuzzy word scores by its strongest alignment in the span: both documents
+# hold an exact 'bx' within the same span, so they tie, whichever of 'bx' and
+# its fuzzy neighbour 'by' comes first.
+# ----------------------------------------------------------------------
+
+statement ok
+CREATE TABLE og_fuzzy (a INTEGER PRIMARY KEY, b VARCHAR);
+
+statement ok
+INSERT INTO og_fuzzy VALUES (1, 'red bx by fox'), (2, 'red by bx fox');
+
+statement ok
+CREATE INDEX og_fuzzy_pos ON og_fuzzy USING inverted (a, b og_words_pos);
+
+statement ok
+VACUUM (REFRESH_TABLE) og_fuzzy;
+
+query
+SELECT a FROM og_fuzzy WHERE b @@ to_tsquery('"red 1-* bx~1 1-2 fox"') ORDER BY BM25(og_fuzzy.tableoid) DESC, a;
+----
+a
+1
+2
+
+# ----------------------------------------------------------------------
 # Slop cannot be combined with an open gap.
 # ----------------------------------------------------------------------
 
@@ -542,6 +567,24 @@ SELECT a FROM og_pos WHERE b @@ ts_phrase('brown', [NULL, 3], 'fox');
 ----
 db error: ERROR: ts_phrase gap must be a non-null non-negative integer, got NULL of type INTEGER (argument 1)
 HINT: Example: ts_phrase('quick brown fox') or ts_phrase('a', 1, 'b', slop := 2). INTEGER / INTEGER[] gap allowed between text args; `slop := N` is a non-negative budget for position rearrangements (incompatible with interval gaps).
+
+
+# ----------------------------------------------------------------------
+# A gap too large for a position offset is refused rather than narrowed.
+# ----------------------------------------------------------------------
+
+query error
+SELECT a FROM og_pos WHERE b @@ ts_phrase('brown', [4294967296, NULL], 'fox');
+----
+db error: ERROR: ts_phrase gap too large: 4294967296 (at most 4294967293) (argument 1)
+HINT: Example: ts_phrase('quick brown fox') or ts_phrase('a', 1, 'b', slop := 2). INTEGER / INTEGER[] gap allowed between text args; `slop := N` is a non-negative budget for position rearrangements (incompatible with interval gaps).
+
+
+query error
+SELECT a FROM og_txt WHERE b @@ ('brown' ## [0, 4294967294] ## 'fox');
+----
+db error: ERROR: ## gap too large: 4294967294 (at most 4294967293)
+HINT: Use a literal INTEGER (e.g. ts_phrase('a') ## 1 ## 'b') or a 2-element INTEGER[] interval.
 
 
 # ----------------------------------------------------------------------

@@ -60,11 +60,25 @@ struct Entry {
   score_t boost = kNoBoost;
 };
 
+struct Boosted {
+  PosAttr::value_t pos = 0;
+  score_t boost = kNoBoost;
+};
+
+struct BoostWindow {
+  std::vector<Boosted> entries;
+  size_t head = 0;
+  PosAttr::value_t start = 0;
+};
+
+template<bool HasBoost>
 struct Level {
   PosAttr::value_t cur = pos_limits::eof();
+  PosAttr::value_t bound = 0;
   bool started = false;
   bool has = false;
   Entry best;
+  [[no_unique_address]] utils::Need<HasBoost, BoostWindow> window;
 };
 
 struct SpanOffsets {
@@ -78,63 +92,121 @@ inline bool Reaches(const Gap& gap, PosAttr::value_t from,
          static_cast<uint64_t>(from) + gap.hi >= to;
 }
 
+inline void Keep(BoostWindow& window, const Entry& entry) {
+  if (window.head == window.entries.size() || window.start != entry.start) {
+    window.entries.clear();
+    window.head = 0;
+    window.start = entry.start;
+  }
+  while (window.entries.size() != window.head &&
+         window.entries.back().boost <= entry.boost) {
+    window.entries.pop_back();
+  }
+  window.entries.emplace_back(entry.pos, entry.boost);
+}
+
+inline score_t Strongest(BoostWindow& window, const Gap& gap,
+                         PosAttr::value_t to) noexcept {
+  while (!Reaches(gap, window.entries[window.head].pos, to)) {
+    ++window.head;
+    SDB_ASSERT(window.head < window.entries.size());
+  }
+  return window.entries[window.head].boost;
+}
+
 template<typename Source, bool Offs, bool HasBoost>
 class Walker {
  public:
-  Walker(Source& source, std::span<const Gap> gaps, std::vector<Level>& levels)
+  Walker(Source& source, std::span<const Gap> gaps,
+         std::vector<Level<HasBoost>>& levels)
     : _source{source}, _gaps{gaps}, _levels{levels} {
     SDB_ASSERT(_levels.size() == gaps.size() - 1);
     for (auto& level : _levels) {
       level.started = false;
       level.has = false;
+      if constexpr (HasBoost) {
+        level.window.entries.clear();
+        level.window.head = 0;
+      }
     }
   }
 
-  const Entry* Query(size_t i, PosAttr::value_t x) {
-    auto& level = _levels[i];
-    if (!level.started) {
-      level.started = true;
-      level.cur = _source.Next(i);
-    }
-    while (!pos_limits::eof(level.cur) && level.cur <= x) {
-      const auto cur = level.cur;
-      Entry entry;
-      bool defined = false;
-      if (i == 0) {
-        entry.pos = cur;
-        entry.start = cur;
-        if constexpr (Offs) {
-          entry.start_offset = _source.StartOffset(0);
-        }
-        if constexpr (HasBoost) {
-          entry.boost = _source.Boost(0);
-        }
-        defined = true;
-      } else if (cur >= _gaps[i].lo) {
-        const auto* prev = Query(i - 1, cur - _gaps[i].lo);
-        if (prev && Reaches(_gaps[i], prev->pos, cur)) {
-          entry.pos = cur;
-          entry.start = prev->start;
-          entry.start_offset = prev->start_offset;
-          if constexpr (HasBoost) {
-            entry.boost = std::min(prev->boost, _source.Boost(i));
+  const Entry* Query(size_t top, PosAttr::value_t to) {
+    SDB_ASSERT(to >= _gaps[top + 1].lo);
+    _levels[top].bound = to - _gaps[top + 1].lo;
+    size_t i = top;
+    while (true) {
+      auto& level = _levels[i];
+      if (!level.started) {
+        level.started = true;
+        level.cur = _source.Next(i);
+      }
+      if (!pos_limits::eof(level.cur) && level.cur <= level.bound) {
+        if (i == 0) {
+          Entry entry{.pos = level.cur, .start = level.cur};
+          if constexpr (Offs) {
+            entry.start_offset = _source.StartOffset(0);
           }
-          defined = true;
+          if constexpr (HasBoost) {
+            entry.boost = _source.Boost(0);
+          }
+          Take(level, entry);
+          level.cur = _source.Next(0);
+        } else if (level.cur < _gaps[i].lo) {
+          level.cur = _source.Next(i);
+        } else {
+          _levels[i - 1].bound = level.cur - _gaps[i].lo;
+          --i;
         }
+        continue;
       }
-      if (defined) {
-        level.best = entry;
-        level.has = true;
+      if (i == top) {
+        return Reach(top, to);
       }
-      level.cur = _source.Next(i);
+      auto& parent = _levels[++i];
+      if (const auto* prev = Reach(i - 1, parent.cur)) {
+        Entry entry{
+          .pos = parent.cur,
+          .start = prev->start,
+          .start_offset = prev->start_offset,
+        };
+        if constexpr (HasBoost) {
+          entry.boost = std::min(prev->boost, _source.Boost(i));
+        }
+        Take(parent, entry);
+      }
+      parent.cur = _source.Next(i);
     }
-    return level.has ? &level.best : nullptr;
   }
 
  private:
+  void Take(Level<HasBoost>& level, const Entry& entry) {
+    level.best = entry;
+    level.has = true;
+    if constexpr (HasBoost) {
+      Keep(level.window, entry);
+    }
+  }
+
+  const Entry* Reach(size_t i, PosAttr::value_t to) {
+    auto& level = _levels[i];
+    const auto& gap = _gaps[i + 1];
+    if (!level.has || !Reaches(gap, level.best.pos, to)) {
+      return nullptr;
+    }
+    if constexpr (HasBoost) {
+      _reached = level.best;
+      _reached.boost = Strongest(level.window, gap, to);
+      return &_reached;
+    } else {
+      return &level.best;
+    }
+  }
+
   Source& _source;
   std::span<const Gap> _gaps;
-  std::vector<Level>& _levels;
+  std::vector<Level<HasBoost>>& _levels;
+  [[no_unique_address]] utils::Need<HasBoost, Entry> _reached;
 };
 
 inline bool AllOpen(std::span<const Gap> gaps) noexcept {
@@ -159,7 +231,7 @@ bool Exists(Source& source, std::span<const Gap> gaps) {
 template<bool Offs, bool HasBoost, typename Source, typename Collect>
 Result Match(Source& source, std::span<const Gap> gaps,
              PosAttr::value_t min_extent, bool early_exit,
-             std::vector<Level>& levels, Collect&& collect) {
+             std::vector<Level<HasBoost>>& levels, Collect&& collect) {
   Result res;
   const size_t n = gaps.size();
   SDB_ASSERT(n >= 2);
@@ -226,8 +298,8 @@ Result Match(Source& source, std::span<const Gap> gaps,
       if (e < last.lo) {
         continue;
       }
-      const auto* pred = walker.Query(n - 2, e - last.lo);
-      if (pred && Reaches(last, pred->pos, e) && emit(*pred, e)) {
+      const auto* pred = walker.Query(n - 2, e);
+      if (pred && emit(*pred, e)) {
         break;
       }
     }
@@ -239,7 +311,7 @@ Result Match(Source& source, std::span<const Gap> gaps,
 
 struct Scratch {
   std::vector<size_t> next;
-  std::vector<Level> levels;
+  std::vector<Level<false>> levels;
 };
 
 class VectorSource {
@@ -482,7 +554,7 @@ class PhraseOrderedMatcher {
   Positions _pos;
   containers::Fixed<detail::ordered::Gap, N> _gaps;
   PosAttr::value_t _min_extent = 1;
-  std::vector<detail::ordered::Level> _levels;
+  std::vector<detail::ordered::Level<HasBoost>> _levels;
   std::vector<detail::ordered::SpanOffsets> _matches;
   size_t _match_idx = 0;
 

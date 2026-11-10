@@ -2356,6 +2356,49 @@ TEST_F(SearchFilterBuilderTest, test_PhraseOpenGapNullMinError) {
                "ts_phrase gap must be a non-null non-negative integer");
 }
 
+TEST_F(SearchFilterBuilderTest, test_PhraseGapTooLargeError) {
+  std::vector<ColumnSpec> columns{
+    {.id = 1, .type = duckdb::LogicalType::VARCHAR, .name = "category"}};
+  for (const auto* where :
+       {"ts_phrase('a', [4294967296, NULL], 'b')",
+        "ts_phrase('a', [4294967294, NULL], 'b')",
+        "ts_phrase('a', [0, 4294967294], 'b')",
+        "ts_phrase('a', 4294967294, 'b')",
+        "('a'::TSQUERY ## [4294967296, NULL] ## 'b'::TSQUERY)"}) {
+    SCOPED_TRACE(where);
+    AssertFilter(irs::BooleanFilter{},
+                 absl::StrCat("SELECT * FROM foo WHERE category @@ ", where),
+                 columns, false, SegmentationAnalyzerProvider, "gap too large");
+  }
+}
+
+TEST_F(SearchFilterBuilderTest, test_PhraseGapAtTheLimit) {
+  std::vector<ColumnSpec> columns{
+    {.id = 1, .type = duckdb::LogicalType::VARCHAR, .name = "category"}};
+  irs::BooleanFilter expected;
+  auto& phrase = AddChild<irs::ByPhrase>(expected);
+  *phrase.mutable_field_id() = ExpectedFieldId(1);
+  phrase.mutable_options()->push_back<irs::ByTermOptions>().term =
+    irs::ViewCast<irs::byte_type>(std::string_view{"a"});
+  phrase.mutable_options()
+    ->push_back<irs::ByTermOptions>(4294967294, irs::pos_limits::kOpenGap)
+    .term = irs::ViewCast<irs::byte_type>(std::string_view{"b"});
+  AssertFilter(expected,
+               "SELECT * FROM foo WHERE category @@ "
+               "ts_phrase('a', [4294967293, NULL], 'b')",
+               columns, true, SegmentationAnalyzerProvider);
+}
+
+TEST_F(SearchFilterBuilderTest, test_TsqueryPhraseDistanceTooLargeError) {
+  std::vector<ColumnSpec> columns{
+    {.id = 1, .type = duckdb::LogicalType::VARCHAR, .name = "category"}};
+  AssertFilter(irs::BooleanFilter{},
+               "SELECT * FROM foo WHERE category @@ "
+               "tsquery_phrase(ts_phrase('a'), ts_phrase('b'), 4294967295)",
+               columns, false, SegmentationAnalyzerProvider,
+               "tsquery_phrase distance too large");
+}
+
 TEST_F(SearchFilterBuilderTest, test_PhraseScalarNullGapError) {
   std::vector<ColumnSpec> columns{
     {.id = 1, .type = duckdb::LogicalType::VARCHAR, .name = "category"}};
