@@ -255,38 +255,61 @@ template<bool Right>
 uint64_t PhraseCheck::AnchorMatch::Ways(uint32_t slot, size_t at,
                                         State& state) {
   const auto& phrase = *state.phrase;
-  if (slot == (Right ? phrase.slots.size() - 1 : 0)) {
+  const auto last = static_cast<uint32_t>(Right ? phrase.slots.size() - 1 : 0);
+  if (slot == last) {
     return 1;
   }
-  const auto other = Right ? slot + 1 : slot - 1;
-  const auto& next = phrase.slots[other];
-  const auto& gap = Right ? next : phrase.slots[slot];
-  const uint64_t pos = PosAt(at);
-  uint64_t ways = 0;
-  uint64_t accepted = std::numeric_limits<uint64_t>::max();
-  for (auto j = at; Right ? ++j < _end : j-- > _carry_base;) {
-    const uint64_t p = PosAt(j);
-    const auto distance = Right ? p - pos : pos - p;
-    if (distance > gap.offs_max) {
-      break;
+  _frames.clear();
+  _frames.push_back({.at = at, .j = at, .slot = slot});
+  while (true) {
+    auto& frame = _frames.back();
+    const auto other = Right ? frame.slot + 1 : frame.slot - 1;
+    const auto& next = phrase.slots[other];
+    const auto& gap = Right ? next : phrase.slots[frame.slot];
+    const uint64_t pos = PosAt(frame.at);
+    bool deeper = false;
+    while (Right ? ++frame.j < _end : frame.j-- > _carry_base) {
+      const uint64_t p = PosAt(frame.j);
+      const auto distance = Right ? p - pos : pos - p;
+      if (distance > gap.offs_max) {
+        break;
+      }
+      if (Over(state)) {
+        return 0;
+      }
+      if (distance < gap.offs_min || p == frame.accepted ||
+          !Accepts(phrase, next, TermAt(frame.j))) {
+        continue;
+      }
+      frame.accepted = p;
+      if (other != last) {
+        deeper = true;
+        break;
+      }
+      ++frame.ways;
+      if (!state.count) {
+        break;
+      }
     }
-    if (Over(state)) {
-      return 0;
-    }
-    if (distance < gap.offs_min || p == accepted ||
-        !Accepts(phrase, next, TermAt(j))) {
+    if (deeper) {
+      _frames.push_back({.at = frame.j, .j = frame.j, .slot = other});
       continue;
     }
-    accepted = p;
-    ways += Ways<Right>(other, j, state);
-    if (_overran) {
-      return 0;
-    }
-    if (!state.count && ways != 0) {
-      return 1;
+    auto ways = frame.ways;
+    _frames.pop_back();
+    while (true) {
+      if (_frames.empty()) {
+        return ways;
+      }
+      auto& parent = _frames.back();
+      parent.ways += ways;
+      if (state.count || parent.ways == 0) {
+        break;
+      }
+      ways = 1;
+      _frames.pop_back();
     }
   }
-  return ways;
 }
 
 bool PhraseCheck::AnchorMatch::Over(State& state) noexcept {
