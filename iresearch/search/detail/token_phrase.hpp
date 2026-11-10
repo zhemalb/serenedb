@@ -93,35 +93,30 @@ class PhraseCheck final : public TokenConsumer {
     static constexpr uint64_t kStepsPerToken = 4;
     static constexpr uint64_t kStepSlack = 256;
 
-    struct Token {
-      duckdb::string_t term;
-      uint32_t pos = 0;
-    };
-
-    const duckdb::string_t& TermAt(size_t at) const noexcept {
-      SDB_ASSERT(at >= _carry_base && at < _end);
-      return at < _batch_base ? _carry[at - _carry_base].term
-                              : _batch_terms[at - _batch_base];
-    }
-
     uint32_t PosAt(size_t at) const noexcept {
       SDB_ASSERT(at >= _carry_base && at < _end);
-      return at < _batch_base ? _carry[at - _carry_base].pos
+      return at < _batch_base ? _carry_pos[at - _carry_base]
                               : _batch_pos[at - _batch_base];
     }
 
     void Carry(uint64_t left);
     bool Hit(size_t at, State& state);
     template<bool Right>
-    uint64_t Ways(uint32_t slot, size_t at, State& state);
-    bool Over(State& state) noexcept;
+    IRS_FORCE_INLINE uint64_t Ways(uint32_t slot, size_t at, State& state);
+    template<bool Right>
+    IRS_NO_INLINE uint64_t Walk(uint32_t slot, size_t at, State& state);
+    template<bool Right>
+    IRS_NO_INLINE uint64_t Deeper(uint32_t slot, size_t at, State& state);
+    template<bool Right, bool Last>
+    IRS_FORCE_INLINE uint64_t Scan(uint32_t slot, size_t at, State& state);
 
     std::span<const duckdb::string_t, TokenBatch::kCapacity> _batch_terms;
     std::span<const uint32_t, TokenBatch::kCapacity> _batch_pos;
     size_t _batch_base = 0;
     size_t _end = 0;
     size_t _carry_base = 0;
-    std::vector<Token> _carry;
+    std::vector<duckdb::string_t> _carry_terms;
+    std::vector<uint32_t> _carry_pos;
     duckdb::ArenaAllocator _arena{duckdb::Allocator::DefaultAllocator()};
     std::vector<size_t> _pending;
     uint32_t _last = 0;
