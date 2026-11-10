@@ -34,7 +34,8 @@
 namespace irs::detail {
 
 inline bool IsSloppy(const TokenPhraseQuery& query) noexcept {
-  return query.Compiled().slop.max != 0;
+  const auto& compiled = query.Compiled();
+  return compiled.slop.max != 0 || compiled.open;
 }
 
 template<typename Result, bool Scored, typename F>

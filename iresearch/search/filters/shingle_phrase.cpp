@@ -28,9 +28,21 @@
 
 #include "iresearch/analysis/shingle_tokenizer.hpp"
 #include "iresearch/analysis/token_attributes.hpp"
+#include "iresearch/utils/type_limits.hpp"
 
 namespace irs {
 namespace {
+
+constexpr auto AddLag(auto offs, auto lag) noexcept {
+  return offs == pos_limits::kOpenGap ? offs : offs + lag;
+}
+
+constexpr bool LagFits(PosAttr::value_t offs_min, PosAttr::value_t offs_max,
+                       PosAttr::value_t lag) noexcept {
+  return uint64_t{offs_min} + lag < pos_limits::kOpenGap &&
+         (offs_max == pos_limits::kOpenGap ||
+          uint64_t{offs_max} + lag < pos_limits::kOpenGap);
+}
 
 bool Indexes(const analysis::ShingleTokenizer& tokenizer,
              std::span<const bytes_view> words) noexcept {
@@ -111,9 +123,12 @@ std::optional<ByPhraseOptions> ShingleCover(
     if (run.empty()) {
       return true;
     }
+    if (!LagFits(run_min, run_max, lag)) {
+      return false;
+    }
     const std::span<const bytes_view> words{run};
     auto offs_min = run_min + lag;
-    auto offs_max = run_max + lag;
+    auto offs_max = AddLag(run_max, lag);
     size_t prev = 0;
     for (size_t i = 0; i != words.size();) {
       auto start = i;
@@ -174,12 +189,14 @@ std::optional<ByPhraseOptions> ShingleCover(
     }
     if (!tokenizer.OutputUnigrams() ||
         (tokenizer.Separator().empty() &&
-         ByPhraseOptions::KindOf(info.part) == SlotKind::Expansion)) {
+         ByPhraseOptions::KindOf(info.part) == SlotKind::Expansion) ||
+        !LagFits(info.offs_min, info.offs_max, lag)) {
       return std::nullopt;
     }
     std::visit(
       [&]<typename Part>(const Part& part) {
-        cover.push_back<Part>(info.offs_min + lag, info.offs_max + lag) = part;
+        cover.push_back<Part>(info.offs_min + lag, AddLag(info.offs_max, lag)) =
+          part;
       },
       info.part);
     lag = 0;

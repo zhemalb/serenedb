@@ -28,6 +28,7 @@
 #include "iresearch/index/index_reader.hpp"
 #include "iresearch/search/detail/collect.hpp"
 #include "iresearch/search/detail/make.hpp"
+#include "iresearch/search/detail/phrase_ordered_matcher.hpp"
 #include "iresearch/search/detail/phrase_slop_matcher.hpp"
 #include "iresearch/search/detail/phrase_slots.hpp"
 #include "iresearch/search/detail/plan.hpp"
@@ -47,6 +48,9 @@ auto ResolveSlotMatcherOf(const Query& query, F&& f) {
     return f.template
     operator()<PhraseSlopMatcher<Slot, Offs, HasFreq, 0, HasBoost>, Leaf>(
       query.slop);
+  } else if constexpr (M == PhraseMatch::Ordered) {
+    return f.template
+    operator()<PhraseOrderedMatcher<Slot, Offs, HasFreq, 0, HasBoost>, Leaf>();
   } else {
     static constexpr bool kIntervals = M == PhraseMatch::Intervals;
     return f.template operator()<
@@ -60,6 +64,8 @@ auto ResolveMatcherOf(const Query& query, F&& f) {
   if constexpr (M == PhraseMatch::Slop) {
     return f.template operator()<FixedPhraseSlopMatcher<Offs, HasFreq, N>>(
       query.slop);
+  } else if constexpr (M == PhraseMatch::Ordered) {
+    return f.template operator()<FixedPhraseOrderedMatcher<Offs, HasFreq, N>>();
   } else {
     static constexpr bool kIntervals = M == PhraseMatch::Intervals;
     return f
@@ -138,7 +144,7 @@ template<PhraseMatch M>
 std::optional<score_t> ConstantOf(PhraseKind<M>, const FixedPhraseQuery& query,
                                   const ScoreArgs& args) {
   return ConstantOf(query.Segment(), *query.state.reader, args,
-                    M == PhraseMatch::Slop);
+                    M == PhraseMatch::Slop || M == PhraseMatch::Ordered);
 }
 
 template<PhraseMatch M>
@@ -146,7 +152,8 @@ std::optional<score_t> ConstantOf(PhraseKind<M>,
                                   const VariadicPhraseQuery& query,
                                   const ScoreArgs& args) {
   return ConstantOf(query.Segment(), *query.state.reader, args,
-                    M == PhraseMatch::Slop || !query.state.boosts.empty());
+                    M == PhraseMatch::Slop || M == PhraseMatch::Ordered ||
+                      !query.state.boosts.empty());
 }
 
 template<PhraseMatch M, typename Query>

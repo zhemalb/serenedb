@@ -47,6 +47,7 @@
 #include "iresearch/search/filters/wildcard_filter.hpp"
 #include "iresearch/utils/pg/sql_exception_macro.hpp"
 #include "iresearch/utils/type_id.hpp"
+#include "iresearch/utils/type_limits.hpp"
 #include "iresearch/utils/utf8_utils.hpp"
 #include "iresearch/utils/wildcard_utils.hpp"
 
@@ -247,9 +248,9 @@ struct ParserContext {
     return f;
   }
 
-  void SetGap(int min, int max) {
-    offs_min = static_cast<size_t>(min);
-    offs_max = static_cast<size_t>(max);
+  void SetGap(size_t min, size_t max) {
+    offs_min = min;
+    offs_max = max;
   }
 
   void SetSlop(irs::Filter* f, int slop) {
@@ -448,8 +449,6 @@ struct ParserContext {
     return out;
   }
 
-  static constexpr size_t kAnyGap = 1U << 24U;
-
   // The clause the grammar has just finished. It stays here until a modifier
   // and a connector have said which bucket it belongs in, and a rule that
   // reads a suffix -- a boost, a fuzziness, `@k` -- still reaches it.
@@ -544,7 +543,7 @@ struct ParserContext {
     bool first = true;
     for (const auto term : fn_terms) {
       if (!first) {
-        SetGap(static_cast<int>(offs_min), static_cast<int>(offs_max));
+        SetGap(offs_min, offs_max);
       }
       first = false;
       AddPhraseTerm(term);
@@ -757,7 +756,7 @@ struct ParserContext {
 
   irs::Filter& EndFnOrdered() {
     RequireTerms("fn:ordered");
-    return FnPhrase(1, kAnyGap);
+    return FnPhrase(1, irs::pos_limits::kOpenGap);
   }
 
   irs::Filter& EndFnMaxGaps(int gaps) {

@@ -137,6 +137,8 @@ add_executable(
     search/pattern_cache_test.cpp
     search/per_node_scorer_test.cpp
     search/phrase_filter_tests.cpp
+    search/phrase_ordered_matcher_test.cpp
+    search/phrase_ordered_pruned_test.cpp
     search/phrase_positions_test.cpp
     search/phrase_slop_matcher_fuzz.cpp
     search/phrase_slop_matcher_tests.cpp

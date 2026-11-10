@@ -35,6 +35,7 @@
 #include <iresearch/utils/pg/errcodes.hpp>
 #include <iresearch/utils/pg/sql_exception_macro.hpp>
 #include <iresearch/utils/string.hpp>
+#include <iresearch/utils/type_limits.hpp>
 #include <optional>
 #include <utility>
 
@@ -63,6 +64,8 @@ irs::analysis::ShingleTokenizer* QueryShingle(
 
 namespace {
 
+constexpr int64_t kMaxDistance = int64_t{irs::pos_limits::kOpenGap} - 1;
+
 PhraseGap ParsePhraseGap(const duckdb::Value& val, std::string_view label,
                          std::string_view hint,
                          std::optional<size_t> arg_index = std::nullopt) {
@@ -84,6 +87,9 @@ PhraseGap ParsePhraseGap(const duckdb::Value& val, std::string_view label,
     if (raw < 0) {
       error(" gap must be >= 0, got ", raw);
     }
+    if (raw >= kMaxDistance) {
+      error(" gap too large: ", raw, " (at most ", kMaxDistance - 1, ")");
+    }
     return raw;
   };
 
@@ -95,6 +101,10 @@ PhraseGap ParsePhraseGap(const duckdb::Value& val, std::string_view label,
             children.size(), " elements");
     }
     auto min = coerce(children[0]);
+    if (children[1].IsNull()) {
+      return {.min = static_cast<size_t>(min) + 1,
+              .max = irs::pos_limits::kOpenGap};
+    }
     auto max = coerce(children[1]);
     if (min > max) {
       error(" interval gap must satisfy 0 <= min <= max, got [", min, ", ", max,
@@ -540,6 +550,12 @@ PhraseGap ParseTsqueryPhraseDistance(const duckdb::Expression& expr) {
   if (raw < 1) {
     THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
                     ERR_MSG("tsquery_phrase distance must be >= 1, got ", raw),
+                    ERR_HINT(kHint));
+  }
+  if (raw > kMaxDistance) {
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+                    ERR_MSG("tsquery_phrase distance too large: ", raw,
+                            " (at most ", kMaxDistance, ")"),
                     ERR_HINT(kHint));
   }
   return {.min = static_cast<size_t>(raw), .max = static_cast<size_t>(raw)};
