@@ -167,7 +167,7 @@ class PhraseCheck final : public TokenConsumer {
 
   class PositionsMatch {
    public:
-    void Reset(size_t slots);
+    void Reset(const CompiledPhrase& phrase, uint32_t anchors);
     void Feed(const TokenBatch& batch, uint32_t from, State& state);
     PhraseVerdict Finish(State& state);
 
@@ -183,6 +183,9 @@ class PhraseCheck final : public TokenConsumer {
     std::vector<detail::ordered::Gap> _gaps;
     detail::ordered::Scratch _ordered;
     detail::slop::MatchScratch _scratch;
+    uint64_t _stop = 0;
+    uint32_t _anchor = 0;
+    uint32_t _anchors = 0;
   };
 
   decltype(auto) WithMatch(auto&& visit) {

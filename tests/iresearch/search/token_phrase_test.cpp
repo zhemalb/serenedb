@@ -263,14 +263,15 @@ irs::ByPhraseOptions::TokenizerFactory TextOf() {
 
 bool CheckText(irs::PhraseCheck& check, std::string_view text,
                irs::PhraseVerdict& verdict,
-               const duckdb::LogicalType& type = duckdb::LogicalType::VARCHAR) {
+               const duckdb::LogicalType& type = duckdb::LogicalType::VARCHAR,
+               uint32_t anchors = 0) {
   duckdb::DataChunk chunk;
   chunk.Initialize(duckdb::Allocator::DefaultAllocator(), {type});
   chunk.SetChildCardinality(1);
   duckdb::FlatVector::GetDataMutable<duckdb::string_t>(chunk.data[0])[0] = {
     text.data(), static_cast<uint32_t>(text.size())};
   check.Bind(chunk.data[0], 1);
-  verdict = check.Check(0);
+  verdict = check.Check(0, anchors);
   return verdict.freq != 0;
 }
 
@@ -562,6 +563,41 @@ TEST(PhraseCheckTest, open_gaps_on_either_side_of_the_anchor_stop_early) {
       Check<ProgressWords>(phrase, text, false, std::nullopt, {});
     EXPECT_TRUE(found.matched);
     EXPECT_LT(ProgressWords::emitted, 1000U);
+  }
+}
+
+TEST(PhraseCheckTest, counted_open_gaps_stop_after_the_last_anchor) {
+  irs::ByPhraseOptions last;
+  PushTerm(last, "a", 0, 0);
+  PushTerm(last, "bb", 1, irs::pos_limits::kOpenGap);
+  irs::ByPhraseOptions inner = last;
+  PushTerm(inner, "c", 1, 2);
+  struct Case {
+    const irs::ByPhraseOptions* phrase;
+    std::string text;
+    uint64_t tokens = 0;
+  };
+  const Case kCases[] = {
+    {&last, absl::StrCat("a x bb a bb ", Repeat("a", 20'000)), 20'005},
+    {&inner, absl::StrCat("a bb x c a bb c ", Repeat("c", 20'000)), 20'007},
+  };
+  for (const auto& c : kCases) {
+    SCOPED_TRACE(c.tokens);
+    const irs::CompiledPhrase compiled{*c.phrase, {}, {}};
+    ASSERT_TRUE(compiled.anchor);
+    ASSERT_EQ(1U, compiled.anchor->slot);
+    irs::PhraseCheck check{compiled, TextOf<ProgressWords>(), true};
+    irs::PhraseVerdict full;
+    ProgressWords::emitted = 0;
+    ASSERT_TRUE(CheckText(check, c.text, full));
+    EXPECT_EQ(c.tokens, ProgressWords::emitted);
+    irs::PhraseVerdict early;
+    ProgressWords::emitted = 0;
+    ASSERT_TRUE(
+      CheckText(check, c.text, early, duckdb::LogicalType::VARCHAR, 2));
+    EXPECT_LT(ProgressWords::emitted, 1000U);
+    EXPECT_EQ(full.freq, early.freq);
+    EXPECT_FLOAT_EQ(full.scale, early.scale);
   }
 }
 
