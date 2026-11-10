@@ -37,6 +37,13 @@ constexpr auto AddLag(auto offs, auto lag) noexcept {
   return offs == pos_limits::kOpenGap ? offs : offs + lag;
 }
 
+constexpr bool LagFits(PosAttr::value_t offs_min, PosAttr::value_t offs_max,
+                       PosAttr::value_t lag) noexcept {
+  return uint64_t{offs_min} + lag < pos_limits::kOpenGap &&
+         (offs_max == pos_limits::kOpenGap ||
+          uint64_t{offs_max} + lag < pos_limits::kOpenGap);
+}
+
 bool Indexes(const analysis::ShingleTokenizer& tokenizer,
              std::span<const bytes_view> words) noexcept {
   const auto n = words.size();
@@ -116,6 +123,9 @@ std::optional<ByPhraseOptions> ShingleCover(
     if (run.empty()) {
       return true;
     }
+    if (!LagFits(run_min, run_max, lag)) {
+      return false;
+    }
     const std::span<const bytes_view> words{run};
     auto offs_min = run_min + lag;
     auto offs_max = AddLag(run_max, lag);
@@ -179,7 +189,8 @@ std::optional<ByPhraseOptions> ShingleCover(
     }
     if (!tokenizer.OutputUnigrams() ||
         (tokenizer.Separator().empty() &&
-         ByPhraseOptions::KindOf(info.part) == SlotKind::Expansion)) {
+         ByPhraseOptions::KindOf(info.part) == SlotKind::Expansion) ||
+        !LagFits(info.offs_min, info.offs_max, lag)) {
       return std::nullopt;
     }
     std::visit(

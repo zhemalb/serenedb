@@ -469,6 +469,29 @@ TEST(ShinglePhrasePlanTest, gaps_split_runs) {
   EXPECT_EQ((std::vector<uint32_t>{0, 3}), Offsets(*plan));
 }
 
+TEST(ShinglePhrasePlanTest, declines_a_gap_the_lag_would_push_past_the_limit) {
+  const auto shingles = MakeShingles(2, 3);
+  const auto cover = [&](irs::PosAttr::value_t offs_min,
+                         irs::PosAttr::value_t offs_max) {
+    auto phrase = Phrase("the quick brown");
+    PushTerm(phrase, "fox", offs_min, offs_max);
+    return irs::ShingleCover(*shingles, phrase, true);
+  };
+  constexpr auto kOpen = irs::pos_limits::kOpenGap;
+  EXPECT_FALSE(cover(4294967294, kOpen));
+  EXPECT_FALSE(cover(4294967293, kOpen));
+  EXPECT_FALSE(cover(1, 4294967293));
+  const auto plan = cover(4294967292, kOpen);
+  ASSERT_TRUE(plan);
+  EXPECT_EQ((std::vector<std::string>{"the quick brown", "fox"}), Terms(*plan));
+  const auto& fox = *std::next(plan->begin());
+  EXPECT_EQ(4294967294U, fox.offs_min);
+  EXPECT_EQ(kOpen, fox.offs_max);
+  auto pattern = Phrase("the quick brown");
+  PushPrefix(pattern, "fo", 4294967293, kOpen);
+  EXPECT_FALSE(irs::ShingleCover(*shingles, pattern, true));
+}
+
 TEST(ShinglePhrasePlanTest, checked_cover_keeps_the_phrase_offsets) {
   const auto shingles = MakeShingles(2, 2);
   auto plan = CoverOf(*shingles, "quick brown fox", false);
