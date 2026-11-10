@@ -131,10 +131,17 @@ class PositionImpl final : public PosAttr {
   void SkipDeltas(uint64_t n) noexcept { _pend_pos += n; }
 
   void reset() final {
-    Clear();
-    if (_cookie.pos_group != std::numeric_limits<uint64_t>::max()) {
-      Land(_cookie.pos_group, PayGroupOf(_cookie), _cookie.pend_pos);
+    if (_pend_pos >= _freq) {
+      return;
     }
+    const auto consumed = static_cast<uint32_t>(_freq - _pend_pos);
+    Clear();
+    _pend_pos = _freq;
+    if (consumed <= _buf_pos) {
+      _buf_pos -= consumed;
+      return;
+    }
+    Rewind();
   }
 
   // prepares iterator to work
@@ -168,10 +175,12 @@ class PositionImpl final : public PosAttr {
   }
 
   // notify the positions that the document stream has moved forward
-  void Notify(uint32_t freq, uint32_t n) {
+  void Notify(uint32_t freq, uint32_t n) noexcept {
     _freq = freq;
     _pend_pos += n;
-    _cookie.pend_pos += n;
+#ifdef SDB_DEV
+    ++_doc_seq;
+#endif
   }
 
   void Clear() noexcept {
@@ -233,33 +242,61 @@ class PositionImpl final : public PosAttr {
     GrowingHint hint;
   };
 
-  struct Cookie {
-    uint64_t pend_pos = 0;
-    uint64_t pos_group = std::numeric_limits<uint64_t>::max();
+  struct DocStart {
+    uint64_t pos_group = 0;
     [[no_unique_address]] utils::Need<IteratorTraits::Offset(), uint64_t>
       pay_group;
+    uint32_t block = 0;
+    uint32_t buf_pos = 0;
+#ifdef SDB_DEV
+    uint64_t seq = 0;
+#endif
   };
-
-  static uint64_t PayGroupOf(const Cookie& cookie) noexcept {
-    if constexpr (IteratorTraits::Offset()) {
-      return cookie.pay_group;
-    } else {
-      return 0;
-    }
-  }
 
   void Land(uint64_t pos_group, uint64_t pay_group, uint64_t pend) noexcept {
     _pos.group = pos_group;
     _pos.header = nullptr;
-    _cookie.pos_group = pos_group;
     if constexpr (IteratorTraits::Offset()) {
       _pay.group = pay_group;
-      _cookie.pay_group = pay_group;
     }
     _next = 0;
     _buf_pos = pos_limits::kBlockSize;
     _pend_pos = pend;
-    _cookie.pend_pos = pend;
+  }
+
+  void MarkDocStart(uint32_t block, uint32_t buf_pos) noexcept {
+    _doc_start.pos_group = _pos.group;
+    if constexpr (IteratorTraits::Offset()) {
+      _doc_start.pay_group = _pay.group;
+    }
+    _doc_start.block = block;
+    _doc_start.buf_pos = buf_pos;
+#ifdef SDB_DEV
+    _doc_start.seq = _doc_seq;
+#endif
+  }
+
+  IRS_NO_INLINE void Rewind() {
+    const auto start = _doc_start;
+#ifdef SDB_DEV
+    SDB_ASSERT(start.seq == _doc_seq);
+#endif
+    if (_pos.group != start.pos_group) {
+      _pos.group = start.pos_group;
+      _pos.header = nullptr;
+      if constexpr (IteratorTraits::Offset()) {
+        _pay.group = start.pay_group;
+      }
+    } else {
+      _pos.SeekBlock(start.block);
+      if constexpr (IteratorTraits::Offset()) {
+        _pay.SeekBlock(start.block);
+      }
+    }
+    _next = start.block;
+    ReadBlock();
+    _doc_start = start;
+    _buf_pos = start.buf_pos;
   }
 
   void Enter(uint64_t block) {
@@ -324,6 +361,12 @@ class PositionImpl final : public PosAttr {
   }
 
   void ReadBlock() {
+    if (_pend_pos < _freq && _next != 0) {
+      const auto consumed = static_cast<uint32_t>(_freq - _pend_pos);
+      if (consumed <= pos_limits::kBlockSize) {
+        MarkDocStart(_next - 1, pos_limits::kBlockSize - consumed);
+      }
+    }
     if (_pos.header == nullptr) [[unlikely]] {
       Enter(_next);
     } else if (_next == PosGroup::kBlocks) [[unlikely]] {
@@ -332,6 +375,9 @@ class PositionImpl final : public PosAttr {
         _pay.Step();
       }
       _next = 0;
+    }
+    if (_pend_pos == _freq) {
+      MarkDocStart(_next, 0);
     }
     _pos.Account();
     if constexpr (IteratorTraits::Offset()) {
@@ -375,7 +421,10 @@ class PositionImpl final : public PosAttr {
   uint32_t* _enc_buf;      // auxillary buffer to decode data
   uint64_t _pend_pos = 0;  // how many positions "behind" we are
   uint64_t _buf_pos = pos_limits::kBlockSize;  // position in pos_deltas_
-  Cookie _cookie;
+  DocStart _doc_start;
+#ifdef SDB_DEV
+  uint64_t _doc_seq = 0;
+#endif
   Stream _pos;
   [[no_unique_address]] ForOffset<Stream> _pay;
   [[no_unique_address]] ForOffset<OffsAttr> _offs;
