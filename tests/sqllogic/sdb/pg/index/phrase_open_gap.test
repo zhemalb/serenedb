@@ -583,8 +583,12 @@ HINT: Example: ts_phrase('quick brown fox') or ts_phrase('a', 1, 'b', slop := 2)
 query error
 SELECT a FROM og_txt WHERE b @@ ('brown' ## [0, 4294967294] ## 'fox');
 ----
-db error: ERROR: ## gap too large: 4294967294 (at most 4294967293)
-HINT: Use a literal INTEGER (e.g. ts_phrase('a') ## 1 ## 'b') or a 2-element INTEGER[] interval.
+db error: ERROR: No function matches the given name and argument types '##(STRING_LITERAL, BIGINT[])'. You might need to add explicit type casts.
+	Candidate functions:
+	"##"(col0 TSQUERY, col1 TSQUERY, /) -> TSQUERY
+	"##"(col0 VARCHAR, col1 VARCHAR, /) -> TSQUERY
+	"##"(col0 VARCHAR, col1 INTEGER, /) -> TSQUERY
+	"##"(col0 VARCHAR, col1 INTEGER[], /) -> TSQUERY
 
 
 # ----------------------------------------------------------------------
