@@ -442,9 +442,9 @@ PhraseVerdict PhraseCheck::PositionsMatch::Finish(State& state) {
   }
   if (n > 1 && phrase.slop.max != 0) {
     detail::slop::SpanCursors cursors{_slots, _scratch};
-    return scaled(
-      detail::slop::Sweep<0>(cursors, phrase.slop.offsets, phrase.slop.max,
-                             phrase.slop.pairs, _scratch, !state.count, [] {}));
+    return scaled(detail::slop::Sweep<0>(cursors, phrase.slop.offsets,
+                                         phrase.slop.max, phrase.slop.pairs,
+                                         _scratch, !state.count, [] {}));
   }
 
   _valid.clear();

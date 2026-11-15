@@ -218,8 +218,7 @@ class PrunedPhrase : public Root {
     return doc;
   }
 
-  score_t ScoreOne(uint32_t freq,
-                   [[maybe_unused]] score_t scale = kNoBoost) {
+  score_t ScoreOne(uint32_t freq, [[maybe_unused]] score_t scale = kNoBoost) {
     _freqs[0] = freq;
     if constexpr (kHasScale) {
       _scales[0] = scale;

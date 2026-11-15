@@ -345,8 +345,9 @@ CompiledPhrase::CompiledPhrase(const ByPhraseOptions& phrase,
     }
   }
 
-  compare_words = n <= kMaxComparedSlots && pattern_slots.empty() &&
-          absl::c_all_of(slots, [](const auto& slot) { return slot.word; });
+  compare_words =
+    n <= kMaxComparedSlots && pattern_slots.empty() &&
+    absl::c_all_of(slots, [](const auto& slot) { return slot.word; });
 
   if (!IsAnchored(phrase)) {
     if (slop.max != 0 && n > 1) {
