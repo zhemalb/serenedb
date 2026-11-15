@@ -520,7 +520,7 @@ statement ok
 VACUUM (REFRESH_TABLE) og_fuzzy;
 
 query
-SELECT a FROM og_fuzzy WHERE b @@ to_tsquery('"red 1-* bx~1 1-2 fox"') ORDER BY BM25(og_fuzzy.tableoid) DESC, a;
+SELECT a FROM og_fuzzy_pos WHERE b @@ to_tsquery('"red 1-* bx~1 1-2 fox"') ORDER BY BM25(og_fuzzy_pos.tableoid) DESC, a;
 ----
 a
 1
