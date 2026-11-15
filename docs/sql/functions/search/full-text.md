@@ -690,7 +690,7 @@ Wildcard, fuzzy and proximity operators compose too — a prefix on one term plu
 
 <SqlLogicTest id="sql/functions/full_text_search/to_tsquery_gaps" />
 
-`N-*` leaves the distance open: `"quick 4-* dog"` needs `dog` at least four positions after `quick`, however far. `fn:ordered(a b c)` is `"a 1-* b 1-* c"`: the words in this order, anywhere after each other.
+`N-*` leaves the distance open: `"quick 4-* dog"` needs `dog` at least four positions after `quick`, however far. Digits, a dash and a star inside the quotes are always a gap: to search for the prefix `19-`, escape the dash, as in `"covid 19\-*"`. `fn:ordered(a b c)` is `"a 1-* b 1-* c"`: the words in this order, anywhere after each other.
 
 <SqlLogicTest id="sql/functions/full_text_search/to_tsquery_open_gap" />
 

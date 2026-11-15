@@ -2007,7 +2007,7 @@ TEST_F(LuceneParserTest, PhraseGapOutOfRangeIsRefused) {
   for (const auto* query :
        {"\"a 4294967296-* b\"", "\"a 7-* b 4294967296-* c\"",
         "\"a 4294967295-* b\"", "\"a 1-4294967296 b\"", "\"a 99999999999-1 b\"",
-        "\"a 0-4294967295 b\""}) {
+        "\"a 0-4294967295 b\"", "\"a 5-2 b\""}) {
     SCOPED_TRACE(query);
     irs::BooleanFilter fresh;
     irs::ParserContext fresh_ctx{fresh, kFieldId, *tokenizer};
@@ -2076,6 +2076,28 @@ TEST_F(LuceneParserTest, FnOrderedJunctionsAreOpen) {
        it != phrase.options().end(); ++it) {
     EXPECT_EQ(1, it->offs_min);
     EXPECT_EQ(irs::pos_limits::kOpenGap, it->offs_max);
+  }
+}
+
+TEST_F(LuceneParserTest, PhraseDigitsDashStarIsAGapUnlessEscaped) {
+  ASSERT_TRUE(irs::ParseQuery(ctx, "\"covid 19-* cases\""));
+  ASSERT_EQ(1, Optional().filters.size());
+  const auto& gap = irs::utils::downCast<irs::ByPhrase>(*Optional().filters[0]);
+  ASSERT_EQ(2, gap.options().size());
+  const auto& cases = *std::next(gap.options().begin());
+  EXPECT_EQ(19, cases.offs_min);
+  EXPECT_EQ(irs::pos_limits::kOpenGap, cases.offs_max);
+
+  irs::BooleanFilter fresh;
+  irs::ParserContext fresh_ctx{fresh, kFieldId, *tokenizer};
+  fresh_ctx.fields = &any_field;
+  ASSERT_TRUE(irs::ParseQuery(fresh_ctx, "\"covid 19\\-* cases\""));
+  const auto& filters = fresh.Bucket(irs::Occur::Should).filters;
+  ASSERT_EQ(1, filters.size());
+  const auto& prefix = irs::utils::downCast<irs::ByPhrase>(*filters[0]);
+  ASSERT_EQ(3, prefix.options().size());
+  for (const auto& part : prefix.options()) {
+    EXPECT_NE(irs::pos_limits::kOpenGap, part.offs_max);
   }
 }
 

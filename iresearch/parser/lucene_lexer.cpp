@@ -1235,7 +1235,8 @@ YY_RULE_SETUP
                                                          yylval->gap.max)
                                       .ec != std::errc{} ||
                                   yylval->gap.max ==
-                                    irs::pos_limits::kOpenGap) {
+                                    irs::pos_limits::kOpenGap ||
+                                  yylval->gap.min > yylval->gap.max) {
                                 return YYUNDEF;
                               }
                               return GAP;
