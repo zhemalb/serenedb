@@ -395,7 +395,7 @@ PhraseQuery::Positions MakePositions(const ByPhraseOptions& options) {
     position->offs_max = word.offs_max;
     position->offs_min = word.offs_min;
     position->lead_offset = look_back +=
-      word.offs_max == pos_limits::kOpenGap ? word.offs_min : word.offs_max;
+      pos_limits::IsOpenGap(word.offs_max) ? word.offs_min : word.offs_max;
     ++position;
   }
   return positions;

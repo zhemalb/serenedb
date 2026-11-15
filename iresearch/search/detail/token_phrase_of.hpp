@@ -33,7 +33,7 @@
 
 namespace irs::detail {
 
-inline bool IsSloppy(const TokenPhraseQuery& query) noexcept {
+inline bool IsScaled(const TokenPhraseQuery& query) noexcept {
   const auto& compiled = query.Compiled();
   return compiled.slop.max != 0 || compiled.open;
 }
@@ -52,7 +52,7 @@ Result Build(TokenPhraseKind, const TokenPhraseQuery& query,
                                         query, Scored);
   };
   if constexpr (Scored) {
-    return ResolveBool(IsSloppy(query), make);
+    return ResolveBool(IsScaled(query), make);
   } else {
     return make.template operator()<false>();
   }
@@ -61,7 +61,7 @@ Result Build(TokenPhraseKind, const TokenPhraseQuery& query,
 inline std::optional<score_t> ConstantOf(TokenPhraseKind,
                                          const TokenPhraseQuery& query,
                                          const ScoreArgs& args) {
-  return ConstantOf(query.Segment(), query.Reader(), args, IsSloppy(query));
+  return ConstantOf(query.Segment(), query.Reader(), args, IsScaled(query));
 }
 
 inline const TermReader& FieldOf(TokenPhraseKind,

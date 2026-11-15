@@ -20,11 +20,11 @@
 
 #include "iresearch/search/detail/make_impl.hpp"
 #include "iresearch/search/detail/phrase_of.hpp"
-#include "iresearch/search/probe/family.hpp"
+#include "iresearch/search/lead/family.hpp"
 
 namespace irs::detail {
 
-IRS_MAKE_DOCS(probe::Family, PhraseKind<PhraseMatch::Ordered>,
-              VariadicPhraseQuery);
+IRS_MAKE_SCORED(lead::Family, PhraseKind<PhraseMatch::OpenGap>,
+                FixedPhraseQuery);
 
 }  // namespace irs::detail

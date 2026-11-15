@@ -23,7 +23,7 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <iresearch/search/detail/phrase_ordered_matcher.hpp>
+#include <iresearch/search/detail/phrase_open_gap_matcher.hpp>
 #include <iresearch/utils/type_limits.hpp>
 #include <random>
 #include <span>
@@ -35,7 +35,7 @@
 
 namespace {
 
-namespace ord = irs::detail::ordered;
+namespace ord = irs::detail::open_gap;
 namespace ref = tests::phrase_ref;
 using value_t = irs::PosAttr::value_t;
 using Slots = std::vector<std::vector<value_t>>;
@@ -64,6 +64,21 @@ std::string Describe(const Slots& slots, const std::vector<ord::Gap>& gaps) {
   return out;
 }
 
+ord::Result RunSpans(const Slots& slots, const std::vector<ord::Gap>& gaps,
+                     ord::Scratch& scratch, Spans& spans) {
+  spans.clear();
+  if (slots.size() < 2) {
+    return {};
+  }
+  ord::VectorSource source{slots, scratch.next};
+  scratch.walk.resize(gaps.size() - 1);
+  return ord::Match<false, false>(
+    source, gaps, ord::MinExtent(gaps), false, scratch.walk,
+    [&](value_t start, value_t end, uint32_t, uint32_t) {
+      spans.emplace_back(start, end);
+    });
+}
+
 void Check(const Slots& slots, const std::vector<ord::Gap>& gaps) {
   SCOPED_TRACE(Describe(slots, gaps));
   std::vector<ref::Gap> ref_gaps;
@@ -74,7 +89,7 @@ void Check(const Slots& slots, const std::vector<ord::Gap>& gaps) {
 
   ord::Scratch scratch;
   Spans spans;
-  const auto res = ord::Run(slots, gaps, false, scratch, &spans);
+  const auto res = RunSpans(slots, gaps, scratch, spans);
   EXPECT_EQ(res.any, expected.matched);
   EXPECT_EQ(res.freq, expected.freq);
   EXPECT_NEAR(res.weight, expected.weight, 1e-9);
@@ -95,7 +110,7 @@ void ExpectSpans(const Slots& slots, const std::vector<ord::Gap>& gaps,
                  const Spans& want) {
   ord::Scratch scratch;
   Spans spans;
-  const auto res = ord::Run(slots, gaps, false, scratch, &spans);
+  const auto res = RunSpans(slots, gaps, scratch, spans);
   EXPECT_EQ(spans, want);
   EXPECT_EQ(res.freq, want.size());
   EXPECT_EQ(res.any, !want.empty());
@@ -147,7 +162,7 @@ ord::Result MatchBoosted(const BoostedSlots& slots,
     min_extent += gaps[i].lo;
   }
   BoostedSource source{slots};
-  std::vector<ord::Level<true>> levels(gaps.size() - 1);
+  std::vector<ord::WalkSlot<true>> levels(gaps.size() - 1);
   return ord::Match<false, true>(source, gaps, min_extent, false, levels,
                                  [](auto, auto, auto, auto) {});
 }
@@ -194,45 +209,45 @@ irs::score_t ReferenceBoost(const BoostedSlots& slots,
 
 }  // namespace
 
-TEST(PhraseOrderedMatcher, TwoSlotsOpen) {
+TEST(PhraseOpenGapMatcher, TwoSlotsOpen) {
   ExpectSpans({{1, 5}, {3, 8}}, {{0, 0}, Open(1)}, {{1, 3}, {5, 8}});
 }
 
-TEST(PhraseOrderedMatcher, NestedCandidatesKeepInnermost) {
+TEST(PhraseOpenGapMatcher, NestedCandidatesKeepInnermost) {
   ExpectSpans({{1, 2}, {3}}, {{0, 0}, Open(1)}, {{2, 3}});
   ExpectSpans({{1}, {2, 3}}, {{0, 0}, Open(1)}, {{1, 2}});
 }
 
-TEST(PhraseOrderedMatcher, RepeatedWordNeedsDistinctPositions) {
+TEST(PhraseOpenGapMatcher, RepeatedWordNeedsDistinctPositions) {
   const std::vector<value_t> a{2, 4, 9};
   ExpectSpans({a, a}, {{0, 0}, Open(1)}, {{2, 4}, {4, 9}});
   ExpectSpans({{3}, {3}}, {{0, 0}, Open(1)}, {});
 }
 
-TEST(PhraseOrderedMatcher, ZeroLowerBoundAllowsSamePosition) {
+TEST(PhraseOpenGapMatcher, ZeroLowerBoundAllowsSamePosition) {
   ExpectSpans({{3}, {3}}, {{0, 0}, Open(0)}, {{3, 3}});
   ExpectSpans({{3, 7}, {3, 7}}, {{0, 0}, Open(0)}, {{3, 3}, {7, 7}});
 }
 
-TEST(PhraseOrderedMatcher, ExactThenOpen) {
+TEST(PhraseOpenGapMatcher, ExactThenOpen) {
   ExpectSpans({{1, 10}, {2, 11}, {5, 20}}, {{0, 0}, Exact(1), Open(1)},
               {{1, 5}, {10, 20}});
 }
 
-TEST(PhraseOrderedMatcher, RangeThenOpen) {
+TEST(PhraseOpenGapMatcher, RangeThenOpen) {
   ExpectSpans({{1, 10}, {3, 14}, {6, 30}}, {{0, 0}, Range(1, 3), Open(1)},
               {{1, 6}});
 }
 
-TEST(PhraseOrderedMatcher, OpenThenExact) {
+TEST(PhraseOpenGapMatcher, OpenThenExact) {
   ExpectSpans({{1, 4}, {6, 9}, {7}}, {{0, 0}, Open(2), Exact(1)}, {{4, 7}});
 }
 
-TEST(PhraseOrderedMatcher, LowerBoundOnOpenJunction) {
+TEST(PhraseOpenGapMatcher, LowerBoundOnOpenJunction) {
   ExpectSpans({{1, 4}, {3, 8}}, {{0, 0}, Open(3)}, {{4, 8}});
 }
 
-TEST(PhraseOrderedMatcher, SlotsFarApart) {
+TEST(PhraseOpenGapMatcher, SlotsFarApart) {
   ExpectSpans({{1}, {40'000'000}}, {{0, 0}, Open(1)}, {{1, 40'000'000}});
   ExpectSpans({{16'777'216}, {16'777'217, 80'000'000}}, {{0, 0}, Open(1)},
               {{16'777'216, 16'777'217}});
@@ -240,13 +255,13 @@ TEST(PhraseOrderedMatcher, SlotsFarApart) {
               {{1, 2}, {40'000'000, 4'000'000'000U}});
 }
 
-TEST(PhraseOrderedMatcher, EmptySlotNeverMatches) {
+TEST(PhraseOpenGapMatcher, EmptySlotNeverMatches) {
   ExpectSpans({{1, 2}, {}}, {{0, 0}, Open(1)}, {});
   ExpectSpans({{}, {1, 2}}, {{0, 0}, Open(1)}, {});
   ExpectSpans({{1}, {}, {5}}, {{0, 0}, Exact(1), Open(1)}, {});
 }
 
-TEST(PhraseOrderedMatcher, EarlyExitReportsAny) {
+TEST(PhraseOpenGapMatcher, EarlyExitReportsAny) {
   const Slots hit{{1, 5}, {3, 8}};
   const Slots miss{{9}, {3, 8}};
   const std::vector<ord::Gap> gaps{{0, 0}, Open(1)};
@@ -255,7 +270,7 @@ TEST(PhraseOrderedMatcher, EarlyExitReportsAny) {
   EXPECT_FALSE(ord::Run(miss, gaps, true, scratch).any);
 }
 
-TEST(PhraseOrderedMatcher, WeightDecaysWithWidth) {
+TEST(PhraseOpenGapMatcher, WeightDecaysWithWidth) {
   const Slots slots{{1, 10}, {2, 30}};
   const std::vector<ord::Gap> gaps{{0, 0}, Open(1)};
   ord::Scratch scratch;
@@ -265,7 +280,7 @@ TEST(PhraseOrderedMatcher, WeightDecaysWithWidth) {
   Check(slots, gaps);
 }
 
-TEST(PhraseOrderedMatcher, RandomAgainstReference) {
+TEST(PhraseOpenGapMatcher, RandomAgainstReference) {
   std::mt19937 rng{20260};
   const auto uniform = [&](uint32_t lo, uint32_t hi) {
     return std::uniform_int_distribution<uint32_t>{lo, hi}(rng);
@@ -310,7 +325,7 @@ TEST(PhraseOrderedMatcher, RandomAgainstReference) {
   }
 }
 
-TEST(PhraseOrderedMatcher, LongPhraseKeepsTheStackFlat) {
+TEST(PhraseOpenGapMatcher, LongPhraseKeepsTheStackFlat) {
   constexpr size_t kSlots = 200'000;
   const Slots slots(kSlots, std::vector<value_t>{1});
   std::vector<ord::Gap> gaps(kSlots, Open(0));
@@ -321,7 +336,7 @@ TEST(PhraseOrderedMatcher, LongPhraseKeepsTheStackFlat) {
   EXPECT_DOUBLE_EQ(res.weight, 1.0);
 }
 
-TEST(PhraseOrderedMatcher, StrongerAlternativeWinsInsideTheSpan) {
+TEST(PhraseOpenGapMatcher, StrongerAlternativeWinsInsideTheSpan) {
   const std::vector<ord::Gap> gaps{{0, 0}, Open(1), Range(1, 2)};
   const BoostedSlots exact_first{{{1, 1.f}}, {{2, 1.f}, {3, 0.5f}}, {{4, 1.f}}};
   const BoostedSlots fuzzy_first{{{1, 1.f}}, {{2, 0.5f}, {3, 1.f}}, {{4, 1.f}}};
@@ -332,7 +347,7 @@ TEST(PhraseOrderedMatcher, StrongerAlternativeWinsInsideTheSpan) {
   }
 }
 
-TEST(PhraseOrderedMatcher, StrongerAlternativeMustReachTheNextWord) {
+TEST(PhraseOpenGapMatcher, StrongerAlternativeMustReachTheNextWord) {
   const std::vector<ord::Gap> gaps{{0, 0}, Open(1), Range(1, 2)};
   const BoostedSlots slots{{{1, 1.f}}, {{2, 1.f}, {3, 0.5f}}, {{5, 1.f}}};
   const auto res = MatchBoosted(slots, gaps);
@@ -340,7 +355,7 @@ TEST(PhraseOrderedMatcher, StrongerAlternativeMustReachTheNextWord) {
   EXPECT_FLOAT_EQ(res.boost, 0.5f);
 }
 
-TEST(PhraseOrderedMatcher, RandomBoostsAgainstReference) {
+TEST(PhraseOpenGapMatcher, RandomBoostsAgainstReference) {
   std::mt19937 rng{20261};
   const auto uniform = [&](uint32_t lo, uint32_t hi) {
     return std::uniform_int_distribution<uint32_t>{lo, hi}(rng);

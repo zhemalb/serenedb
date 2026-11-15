@@ -293,7 +293,7 @@ struct FilterPrinter {
       std::string part_str;
       part.part.visit(PhrasePartVisitor{.out = &part_str});
       absl::StrAppend(&s, part_str, "(", part.offs_min, ", ");
-      if (part.offs_max == irs::pos_limits::kOpenGap) {
+      if (irs::pos_limits::IsOpenGap(part.offs_max)) {
         absl::StrAppend(&s, "*");
       } else {
         absl::StrAppend(&s, part.offs_max);

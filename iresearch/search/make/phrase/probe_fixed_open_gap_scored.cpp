@@ -24,7 +24,7 @@
 
 namespace irs::detail {
 
-IRS_MAKE_DOCS(probe::Family, PhraseKind<PhraseMatch::Ordered>,
-              FixedPhraseQuery);
+IRS_MAKE_SCORED(probe::Family, PhraseKind<PhraseMatch::OpenGap>,
+                FixedPhraseQuery);
 
 }  // namespace irs::detail

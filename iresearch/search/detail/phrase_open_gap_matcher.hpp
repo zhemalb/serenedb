@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <span>
 #include <utility>
 #include <vector>
@@ -39,7 +40,7 @@
 #include "iresearch/utils/type_limits.hpp"
 
 namespace irs {
-namespace detail::ordered {
+namespace detail::open_gap {
 
 struct Gap {
   PosAttr::value_t lo;
@@ -53,8 +54,8 @@ struct Result {
   bool any = false;
 };
 
-struct Entry {
-  PosAttr::value_t pos = 0;
+struct Chain {
+  PosAttr::value_t end = 0;
   PosAttr::value_t start = 0;
   uint32_t start_offset = 0;
   score_t boost = kNoBoost;
@@ -72,12 +73,12 @@ struct BoostWindow {
 };
 
 template<bool HasBoost>
-struct Level {
-  PosAttr::value_t cur = pos_limits::eof();
+struct WalkSlot {
+  PosAttr::value_t pos = pos_limits::eof();
   PosAttr::value_t bound = 0;
   bool started = false;
-  bool has = false;
-  Entry best;
+  bool has_chain = false;
+  Chain chain;
   [[no_unique_address]] utils::Need<HasBoost, BoostWindow> window;
 };
 
@@ -86,23 +87,31 @@ struct SpanOffsets {
   uint32_t end;
 };
 
+inline PosAttr::value_t MinExtent(std::span<const Gap> gaps) noexcept {
+  PosAttr::value_t extent = 1;
+  for (const auto& gap : gaps.subspan(1)) {
+    extent += gap.lo;
+  }
+  return extent;
+}
+
 inline bool Reaches(const Gap& gap, PosAttr::value_t from,
                     PosAttr::value_t to) noexcept {
-  return gap.hi == pos_limits::kOpenGap ||
+  return pos_limits::IsOpenGap(gap.hi) ||
          static_cast<uint64_t>(from) + gap.hi >= to;
 }
 
-inline void Keep(BoostWindow& window, const Entry& entry) {
-  if (window.head == window.entries.size() || window.start != entry.start) {
+inline void Remember(BoostWindow& window, const Chain& chain) {
+  if (window.head == window.entries.size() || window.start != chain.start) {
     window.entries.clear();
     window.head = 0;
-    window.start = entry.start;
+    window.start = chain.start;
   }
   while (window.entries.size() != window.head &&
-         window.entries.back().boost <= entry.boost) {
+         window.entries.back().boost <= chain.boost) {
     window.entries.pop_back();
   }
-  window.entries.emplace_back(entry.pos, entry.boost);
+  window.entries.emplace_back(chain.end, chain.boost);
 }
 
 inline score_t Strongest(BoostWindow& window, const Gap& gap,
@@ -118,100 +127,114 @@ template<typename Source, bool Offs, bool HasBoost>
 class Walker {
  public:
   Walker(Source& source, std::span<const Gap> gaps,
-         std::vector<Level<HasBoost>>& levels)
-    : _source{source}, _gaps{gaps}, _levels{levels} {
-    SDB_ASSERT(_levels.size() == gaps.size() - 1);
-    for (auto& level : _levels) {
-      level.started = false;
-      level.has = false;
+         std::vector<WalkSlot<HasBoost>>& slots)
+    : _source{source}, _gaps{gaps}, _slots{slots} {
+    SDB_ASSERT(_slots.size() == gaps.size() - 1);
+    for (auto& slot : _slots) {
+      slot.started = false;
+      slot.has_chain = false;
       if constexpr (HasBoost) {
-        level.window.entries.clear();
-        level.window.head = 0;
+        slot.window.entries.clear();
+        slot.window.head = 0;
       }
     }
   }
 
-  const Entry* Query(size_t top, PosAttr::value_t to) {
+  IRS_FORCE_INLINE const Chain* LatestChain(size_t top, PosAttr::value_t to) {
     SDB_ASSERT(to >= _gaps[top + 1].lo);
-    _levels[top].bound = to - _gaps[top + 1].lo;
+    _slots[top].bound = to - _gaps[top + 1].lo;
     size_t i = top;
     while (true) {
-      auto& level = _levels[i];
-      if (!level.started) {
-        level.started = true;
-        level.cur = _source.Next(i);
+      if (HasPositionInBound(i)) {
+        i = StartOrDescend(i);
+      } else if (i == top) {
+        return ChainReaching(top, to);
+      } else {
+        ExtendChain(++i);
       }
-      if (!pos_limits::eof(level.cur) && level.cur <= level.bound) {
-        if (i == 0) {
-          Entry entry{.pos = level.cur, .start = level.cur};
-          if constexpr (Offs) {
-            entry.start_offset = _source.StartOffset(0);
-          }
-          if constexpr (HasBoost) {
-            entry.boost = _source.Boost(0);
-          }
-          Take(level, entry);
-          level.cur = _source.Next(0);
-        } else if (level.cur < _gaps[i].lo) {
-          level.cur = _source.Next(i);
-        } else {
-          _levels[i - 1].bound = level.cur - _gaps[i].lo;
-          --i;
-        }
-        continue;
-      }
-      if (i == top) {
-        return Reach(top, to);
-      }
-      auto& parent = _levels[++i];
-      if (const auto* prev = Reach(i - 1, parent.cur)) {
-        Entry entry{
-          .pos = parent.cur,
-          .start = prev->start,
-          .start_offset = prev->start_offset,
-        };
-        if constexpr (HasBoost) {
-          entry.boost = std::min(prev->boost, _source.Boost(i));
-        }
-        Take(parent, entry);
-      }
-      parent.cur = _source.Next(i);
     }
   }
 
  private:
-  void Take(Level<HasBoost>& level, const Entry& entry) {
-    level.best = entry;
-    level.has = true;
+  bool HasPositionInBound(size_t i) {
+    auto& slot = _slots[i];
+    if (!slot.started) {
+      slot.started = true;
+      slot.pos = _source.Next(i);
+    }
+    return !pos_limits::eof(slot.pos) && slot.pos <= slot.bound;
+  }
+
+  size_t StartOrDescend(size_t i) {
+    auto& slot = _slots[i];
+    if (i == 0) {
+      Chain chain{.end = slot.pos, .start = slot.pos};
+      if constexpr (Offs) {
+        chain.start_offset = _source.StartOffset(0);
+      }
+      if constexpr (HasBoost) {
+        chain.boost = _source.Boost(0);
+      }
+      SetChain(slot, chain);
+      slot.pos = _source.Next(0);
+      return 0;
+    }
+    if (slot.pos < _gaps[i].lo) {
+      slot.pos = _source.Next(i);
+      return i;
+    }
+    _slots[i - 1].bound = slot.pos - _gaps[i].lo;
+    return i - 1;
+  }
+
+  void ExtendChain(size_t i) {
+    auto& slot = _slots[i];
+    if (const auto* prev = ChainReaching(i - 1, slot.pos)) {
+      Chain chain{
+        .end = slot.pos,
+        .start = prev->start,
+        .start_offset = prev->start_offset,
+      };
+      if constexpr (HasBoost) {
+        chain.boost = std::min(prev->boost, _source.Boost(i));
+      }
+      SetChain(slot, chain);
+    }
+    slot.pos = _source.Next(i);
+  }
+
+  void SetChain(WalkSlot<HasBoost>& slot, const Chain& chain) {
+    slot.chain = chain;
+    slot.has_chain = true;
     if constexpr (HasBoost) {
-      Keep(level.window, entry);
+      Remember(slot.window, chain);
     }
   }
 
-  const Entry* Reach(size_t i, PosAttr::value_t to) {
-    auto& level = _levels[i];
+  const Chain* ChainReaching(size_t i, PosAttr::value_t to) {
+    auto& slot = _slots[i];
     const auto& gap = _gaps[i + 1];
-    if (!level.has || !Reaches(gap, level.best.pos, to)) {
+    if (!slot.has_chain || !Reaches(gap, slot.chain.end, to)) {
       return nullptr;
     }
     if constexpr (HasBoost) {
-      _reached = level.best;
-      _reached.boost = Strongest(level.window, gap, to);
-      return &_reached;
+      _strongest = slot.chain;
+      _strongest.boost = Strongest(slot.window, gap, to);
+      return &_strongest;
     } else {
-      return &level.best;
+      return &slot.chain;
     }
   }
 
   Source& _source;
   std::span<const Gap> _gaps;
-  std::vector<Level<HasBoost>>& _levels;
-  [[no_unique_address]] utils::Need<HasBoost, Entry> _reached;
+  std::vector<WalkSlot<HasBoost>>& _slots;
+  [[no_unique_address]] utils::Need<HasBoost, Chain> _strongest;
 };
 
 inline bool AllOpen(std::span<const Gap> gaps) noexcept {
   return absl::c_all_of(gaps.subspan(1), [](const Gap& gap) {
-    return gap.hi == pos_limits::kOpenGap;
+    return pos_limits::IsOpenGap(gap.hi);
   });
 }
 
@@ -229,9 +252,10 @@ bool Exists(Source& source, std::span<const Gap> gaps) {
 }
 
 template<bool Offs, bool HasBoost, typename Source, typename Collect>
-Result Match(Source& source, std::span<const Gap> gaps,
-             PosAttr::value_t min_extent, bool early_exit,
-             std::vector<Level<HasBoost>>& levels, Collect&& collect) {
+IRS_FORCE_INLINE Result Match(Source& source, std::span<const Gap> gaps,
+                              PosAttr::value_t min_extent, bool early_exit,
+                              std::vector<WalkSlot<HasBoost>>& slots,
+                              Collect&& collect) {
   Result res;
   const size_t n = gaps.size();
   SDB_ASSERT(n >= 2);
@@ -241,77 +265,77 @@ Result Match(Source& source, std::span<const Gap> gaps,
     return res;
   }
   const auto& last = gaps[n - 1];
-  uint64_t last_start = 0;
-  bool emitted = false;
+  PosAttr::value_t last_start = 0;
   double weight = 0.0;
-  const auto emit = [&](const Entry& pred, PosAttr::value_t e) {
-    if (emitted && pred.start <= last_start) {
+  const auto count = [&](const Chain& chain, PosAttr::value_t end) {
+    if (res.any && chain.start <= last_start) {
       return false;
     }
-    emitted = true;
-    last_start = pred.start;
-    const int64_t width = static_cast<int64_t>(e) - pred.start + 1;
-    const int64_t extra =
-      std::max<int64_t>(width - static_cast<int64_t>(min_extent) + 1, 1);
+    res.any = true;
+    last_start = chain.start;
+    const auto width = uint64_t{end} - chain.start + 1;
+    SDB_ASSERT(width >= min_extent);
     ++res.freq;
-    weight += 1.0 / static_cast<double>(extra);
+    weight += 1.0 / static_cast<double>(1 + width - min_extent);
     if constexpr (HasBoost) {
       res.boost =
-        std::max(res.boost, std::min(pred.boost, source.Boost(n - 1)));
+        std::max(res.boost, std::min(chain.boost, source.Boost(n - 1)));
     }
     if constexpr (Offs) {
-      collect(pred.start, e, pred.start_offset, source.EndOffset(n - 1));
+      collect(chain.start, end, chain.start_offset, source.EndOffset(n - 1));
     } else {
-      collect(pred.start, e, 0u, 0u);
+      collect(chain.start, end, 0u, 0u);
     }
-    return early_exit;
+    return true;
   };
 
   if (n == 2) {
-    Entry pred;
-    bool has = false;
-    auto cur = source.Next(0);
-    for (auto e = source.Next(1); !pos_limits::eof(e); e = source.Next(1)) {
-      if (e < last.lo) {
+    Chain chain;
+    bool has_chain = false;
+    auto start = source.Next(0);
+    for (auto end = source.Next(1); !pos_limits::eof(end);
+         end = source.Next(1)) {
+      if (end < last.lo) {
         continue;
       }
-      const auto x = e - last.lo;
-      for (; !pos_limits::eof(cur) && cur <= x; cur = source.Next(0)) {
-        pred.pos = cur;
-        pred.start = cur;
+      const auto bound = end - last.lo;
+      for (; !pos_limits::eof(start) && start <= bound;
+           start = source.Next(0)) {
+        chain.end = start;
+        chain.start = start;
         if constexpr (Offs) {
-          pred.start_offset = source.StartOffset(0);
+          chain.start_offset = source.StartOffset(0);
         }
         if constexpr (HasBoost) {
-          pred.boost = source.Boost(0);
+          chain.boost = source.Boost(0);
         }
-        has = true;
+        has_chain = true;
       }
-      if (has && Reaches(last, pred.pos, e) && emit(pred, e)) {
+      if (has_chain && Reaches(last, chain.end, end) && count(chain, end) &&
+          early_exit) {
         break;
       }
     }
   } else {
-    Walker<Source, Offs, HasBoost> walker{source, gaps, levels};
-    for (auto e = source.Next(n - 1); !pos_limits::eof(e);
-         e = source.Next(n - 1)) {
-      if (e < last.lo) {
+    Walker<Source, Offs, HasBoost> walker{source, gaps, slots};
+    for (auto end = source.Next(n - 1); !pos_limits::eof(end);
+         end = source.Next(n - 1)) {
+      if (end < last.lo) {
         continue;
       }
-      const auto* pred = walker.Query(n - 2, e);
-      if (pred && emit(*pred, e)) {
+      const auto* chain = walker.LatestChain(n - 2, end);
+      if (chain && count(*chain, end) && early_exit) {
         break;
       }
     }
   }
   res.weight = weight;
-  res.any = emitted;
   return res;
 }
 
 struct Scratch {
   std::vector<size_t> next;
-  std::vector<Level<false>> levels;
+  std::vector<WalkSlot<false>> walk;
 };
 
 class VectorSource {
@@ -347,34 +371,18 @@ class VectorSource {
   std::vector<size_t>& _next;
 };
 
-inline Result Run(
-  const std::vector<std::vector<PosAttr::value_t>>& slots,
-  std::span<const Gap> gaps, bool early_exit, Scratch& scratch,
-  std::vector<std::pair<PosAttr::value_t, PosAttr::value_t>>* spans = nullptr) {
-  if (spans) {
-    spans->clear();
-  }
+inline Result Run(const std::vector<std::vector<PosAttr::value_t>>& slots,
+                  std::span<const Gap> gaps, bool early_exit,
+                  Scratch& scratch) {
   SDB_ASSERT(gaps.size() == slots.size());
   if (slots.size() < 2) {
     return {};
   }
-  PosAttr::value_t min_extent = 1;
-  for (size_t i = 1; i != gaps.size(); ++i) {
-    min_extent += gaps[i].lo;
-  }
   VectorSource source{slots, scratch.next};
-  scratch.levels.resize(gaps.size() - 1);
-  auto res = Match<false, false>(
-    source, gaps, min_extent, early_exit, scratch.levels,
-    [&](PosAttr::value_t start, PosAttr::value_t end, uint32_t, uint32_t) {
-      if (spans) {
-        spans->emplace_back(start, end);
-      }
-    });
-  if (early_exit) {
-    res.freq = res.any ? 1 : 0;
-  }
-  return res;
+  scratch.walk.resize(gaps.size() - 1);
+  return Match<false, false>(
+    source, gaps, MinExtent(gaps), early_exit, scratch.walk,
+    [](PosAttr::value_t, PosAttr::value_t, uint32_t, uint32_t) {});
 }
 
 template<typename Positions, bool Offs, bool HasBoost>
@@ -417,11 +425,11 @@ class IterSource {
   Positions& _pos;
 };
 
-}  // namespace detail::ordered
+}  // namespace detail::open_gap
 
 template<typename TermPositionT, bool Offs, bool HasFreq, size_t N = 0,
          bool HasBoost = false>
-class PhraseOrderedMatcher {
+class PhraseOpenGapMatcher {
  public:
   using TermPosition = TermPositionT;
   using Traits = TermPositionTraits<TermPosition>;
@@ -433,7 +441,7 @@ class PhraseOrderedMatcher {
 
   static_assert(HasFreq || !HasBoost);
 
-  explicit PhraseOrderedMatcher(size_t size) : _pos{size}, _gaps{size} {}
+  explicit PhraseOpenGapMatcher(size_t size) : _pos{size}, _gaps{size} {}
 
   TermPosition& Position(size_t i) noexcept {
     SDB_ASSERT(i < _pos.size());
@@ -442,15 +450,12 @@ class PhraseOrderedMatcher {
 
   void Finish() {
     SDB_ASSERT(_pos.size() >= 2);
-    _min_extent = 1;
     for (size_t i = 0; i != _pos.size(); ++i) {
       const auto& interval = _pos[i].second;
       _gaps[i] = {interval.offs_min, interval.offs_max};
-      if (i != 0) {
-        _min_extent += interval.offs_min;
-      }
     }
-    _levels.resize(_pos.size() - 1);
+    _min_extent = detail::open_gap::MinExtent({_gaps.data(), _gaps.size()});
+    _walk.resize(_pos.size() - 1);
   }
 
   template<bool Ordered = false>
@@ -462,9 +467,9 @@ class PhraseOrderedMatcher {
       _matches.clear();
       _match_idx = 0;
     }
-    detail::ordered::IterSource<Positions, Offs, HasBoost> source{_pos};
-    const auto res = detail::ordered::Match<Offs, HasBoost>(
-      source, {_gaps.data(), _gaps.size()}, _min_extent, !HasFreq, _levels,
+    detail::open_gap::IterSource<Positions, Offs, HasBoost> source{_pos};
+    const auto res = detail::open_gap::Match<Offs, HasBoost>(
+      source, {_gaps.data(), _gaps.size()}, _min_extent, !HasFreq, _walk,
       [&]([[maybe_unused]] PosAttr::value_t start,
           [[maybe_unused]] PosAttr::value_t end,
           [[maybe_unused]] uint32_t start_offset,
@@ -531,9 +536,9 @@ class PhraseOrderedMatcher {
   }
 
  private:
-  void Take(const detail::ordered::Result& res) {
+  void Take(const detail::open_gap::Result& res) {
     if constexpr (HasFreq) {
-      _phrase_freq = static_cast<uint32_t>(res.freq);
+      _phrase_freq = std::saturate_cast<uint32_t>(res.freq);
       _phrase_scale =
         static_cast<score_t>(res.weight / static_cast<double>(res.freq));
       if constexpr (HasBoost) {
@@ -552,10 +557,10 @@ class PhraseOrderedMatcher {
   }
 
   Positions _pos;
-  containers::Fixed<detail::ordered::Gap, N> _gaps;
+  containers::Fixed<detail::open_gap::Gap, N> _gaps;
   PosAttr::value_t _min_extent = 1;
-  std::vector<detail::ordered::Level<HasBoost>> _levels;
-  std::vector<detail::ordered::SpanOffsets> _matches;
+  std::vector<detail::open_gap::WalkSlot<HasBoost>> _walk;
+  std::vector<detail::open_gap::SpanOffsets> _matches;
   size_t _match_idx = 0;
 
   uint32_t _phrase_freq = 0;
@@ -566,7 +571,7 @@ class PhraseOrderedMatcher {
 };
 
 template<bool Offs, bool HasFreq, size_t N = 0>
-using FixedPhraseOrderedMatcher =
-  PhraseOrderedMatcher<FixedTermPosition<Offs>, Offs, HasFreq, N>;
+using FixedPhraseOpenGapMatcher =
+  PhraseOpenGapMatcher<FixedTermPosition<Offs>, Offs, HasFreq, N>;
 
 }  // namespace irs

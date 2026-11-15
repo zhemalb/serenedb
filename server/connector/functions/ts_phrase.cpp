@@ -65,6 +65,7 @@ irs::analysis::ShingleTokenizer* QueryShingle(
 namespace {
 
 constexpr int64_t kMaxDistance = int64_t{irs::pos_limits::kOpenGap} - 1;
+constexpr int64_t kMaxGap = kMaxDistance - 1;
 
 PhraseGap ParsePhraseGap(const duckdb::Value& val, std::string_view label,
                          std::string_view hint,
@@ -87,8 +88,8 @@ PhraseGap ParsePhraseGap(const duckdb::Value& val, std::string_view label,
     if (raw < 0) {
       error(" gap must be >= 0, got ", raw);
     }
-    if (raw >= kMaxDistance) {
-      error(" gap too large: ", raw, " (at most ", kMaxDistance - 1, ")");
+    if (raw > kMaxGap) {
+      error(" gap too large: ", raw, " (at most ", kMaxGap, ")");
     }
     return raw;
   };

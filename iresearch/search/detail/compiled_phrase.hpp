@@ -55,7 +55,7 @@ std::vector<PhraseWordStat> PhraseWordStats(const ByPhraseOptions& phrase,
 
 struct CompiledPhrase {
   static constexpr uint32_t kMaxBits = 64;
-  static constexpr uint32_t kMaxPlainSlots = 8;
+  static constexpr uint32_t kMaxComparedSlots = 8;
 
   struct Slot {
     PosAttr::value_t offs_min = 0;
@@ -104,7 +104,7 @@ struct CompiledPhrase {
   std::vector<bstring> terms;
   Slop slop;
   bool open = false;
-  bool plain = false;
+  bool compare_words = false;
   analysis::dict::StringMap<std::string_view, Accept> accept;
   std::vector<uint32_t> pattern_slots;
   std::optional<Anchor> anchor;
@@ -150,7 +150,7 @@ void ForEachSlot(const CompiledPhrase& phrase, const duckdb::string_t& term,
 template<typename Visitor>
 void ForEachAccepting(const CompiledPhrase& phrase,
                       const duckdb::string_t& term, Visitor&& visit) {
-  if (!phrase.plain) {
+  if (!phrase.compare_words) {
     ForEachSlot(phrase, term, visit);
     return;
   }

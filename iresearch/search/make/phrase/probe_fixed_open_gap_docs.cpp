@@ -18,10 +18,13 @@
 /// Copyright holder is SereneDB GmbH, Berlin, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
-#include "iresearch/search/offsets/make_impl.hpp"
+#include "iresearch/search/detail/make_impl.hpp"
+#include "iresearch/search/detail/phrase_of.hpp"
+#include "iresearch/search/probe/family.hpp"
 
-namespace irs::offsets {
+namespace irs::detail {
 
-IRS_OFFSETS_PHRASE(VariadicPhraseQuery, Ordered);
+IRS_MAKE_DOCS(probe::Family, PhraseKind<PhraseMatch::OpenGap>,
+              FixedPhraseQuery);
 
-}  // namespace irs::offsets
+}  // namespace irs::detail

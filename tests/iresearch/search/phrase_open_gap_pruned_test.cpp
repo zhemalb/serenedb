@@ -58,7 +58,7 @@ class SpacedWords final : public irs::analysis::TypedTokenizer<SpacedWords> {
   irs::TokenTraits Traits() const noexcept final { return {}; }
 
   static constexpr std::string_view type_name() noexcept {
-    return "test_ordered_pruned_words";
+    return "test_open_gap_pruned_words";
   }
 
   template<irs::TokenLayout L>
@@ -186,7 +186,7 @@ std::vector<std::string> Corpus(size_t count) {
 
 }  // namespace
 
-TEST(PhraseOrderedPrunedTest, pruned_top_matches_full_top) {
+TEST(PhraseOpenGapPrunedTest, pruned_top_matches_full_top) {
   const irs::BM25 scorer;
   const PositionalIndex index{Corpus(20000), scorer};
   struct Case {

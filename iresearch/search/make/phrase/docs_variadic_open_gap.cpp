@@ -24,7 +24,7 @@
 
 namespace irs::detail {
 
-IRS_MAKE_DOCS(docs::Family, PhraseKind<PhraseMatch::Ordered>,
+IRS_MAKE_DOCS(docs::Family, PhraseKind<PhraseMatch::OpenGap>,
               VariadicPhraseQuery);
 
 }  // namespace irs::detail

@@ -264,7 +264,7 @@ bool IsStandalone(const ByPhraseOptions& phrase) noexcept {
 
 bool HasOpenGap(const ByPhraseOptions& phrase) noexcept {
   return absl::c_any_of(phrase, [](const auto& info) {
-    return info.offs_max == pos_limits::kOpenGap;
+    return pos_limits::IsOpenGap(info.offs_max);
   });
 }
 
@@ -345,7 +345,7 @@ CompiledPhrase::CompiledPhrase(const ByPhraseOptions& phrase,
     }
   }
 
-  plain = n <= kMaxPlainSlots && pattern_slots.empty() &&
+  compare_words = n <= kMaxComparedSlots && pattern_slots.empty() &&
           absl::c_all_of(slots, [](const auto& slot) { return slot.word; });
 
   if (!IsAnchored(phrase)) {

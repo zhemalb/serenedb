@@ -497,6 +497,7 @@ bool RegisterAll() {
     "the {0,*} of",
     "united {0,*} states",
     "united {0,*} states {0,*} census",
+    "america {0,*} of the",
     "states united the of",
     "th* {0,3} s* {0,3} of*",
     "%ity of* {0,2} cal*",

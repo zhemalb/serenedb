@@ -34,13 +34,13 @@ namespace irs {
 namespace {
 
 constexpr auto AddLag(auto offs, auto lag) noexcept {
-  return offs == pos_limits::kOpenGap ? offs : offs + lag;
+  return pos_limits::IsOpenGap(offs) ? offs : offs + lag;
 }
 
 constexpr bool LagFits(PosAttr::value_t offs_min, PosAttr::value_t offs_max,
                        PosAttr::value_t lag) noexcept {
   return uint64_t{offs_min} + lag < pos_limits::kOpenGap &&
-         (offs_max == pos_limits::kOpenGap ||
+         (pos_limits::IsOpenGap(offs_max) ||
           uint64_t{offs_max} + lag < pos_limits::kOpenGap);
 }
 

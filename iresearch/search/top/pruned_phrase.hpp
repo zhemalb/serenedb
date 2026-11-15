@@ -20,8 +20,6 @@
 
 #pragma once
 
-#include <absl/algorithm/container.h>
-
 #include <utility>
 
 #include "iresearch/analysis/token_attributes.hpp"
@@ -79,7 +77,6 @@ class PrunedPhrase : public Root {
     _provider.freq.value = _freqs;
     if constexpr (kHasScale) {
       _provider.scale.value = _scales;
-      absl::c_fill(_scales, kNoBoost);
     }
     SDB_ASSERT(args.scorer != nullptr);
     _score = args.scorer->PrepareScorer({
@@ -187,15 +184,11 @@ class PrunedPhrase : public Root {
   doc_id_t BoundFirst(doc_id_t doc, doc_id_t end,
                       LoserScoreCollector& collector) {
     FlushBatch(collector);
-    if constexpr (kHasScale) {
-      _scales[0] = kNoBoost;
-    }
     for (; doc < end && _seen != kWindow; doc = _slots.Next(doc)) {
       ++_seen;
       const auto bound = _slots.FreqBound();
-      _freqs[0] = bound;
       _fetcher.Fetch(doc);
-      auto score = _score.Score();
+      auto score = ScoreOne(bound);
       if (score <= collector.ScoreThreshold()) {
         continue;
       }
@@ -206,13 +199,9 @@ class PrunedPhrase : public Root {
       const auto freq = _slots.Freq();
       SDB_ASSERT(freq <= bound);
       if constexpr (kHasScale) {
-        _freqs[0] = freq;
-        _scales[0] = _slots.Scale();
-        score = _score.Score();
-        _scales[0] = kNoBoost;
+        score = ScoreOne(freq, _slots.Scale());
       } else if (freq != bound) {
-        _freqs[0] = freq;
-        score = _score.Score();
+        score = ScoreOne(freq);
       }
       _admit.Add(collector, score, doc);
     }
@@ -227,6 +216,15 @@ class PrunedPhrase : public Root {
       _passed = 0;
     }
     return doc;
+  }
+
+  score_t ScoreOne(uint32_t freq,
+                   [[maybe_unused]] score_t scale = kNoBoost) {
+    _freqs[0] = freq;
+    if constexpr (kHasScale) {
+      _scales[0] = scale;
+    }
+    return _score.Score();
   }
 
   void FlushBatch(LoserScoreCollector& collector) {

@@ -78,6 +78,14 @@ void PhraseCheck::AutomatonMatch::Reset() {
   _at = 0;
 }
 
+PhraseCheck::PositionsMatch::PositionsMatch(const CompiledPhrase& phrase) {
+  if (phrase.open) {
+    for (const auto& slot : phrase.slots) {
+      _gaps.emplace_back(slot.offs_min, slot.offs_max);
+    }
+  }
+}
+
 void PhraseCheck::PositionsMatch::Reset(const CompiledPhrase& phrase,
                                         uint32_t anchors) {
   _slots.resize(phrase.slots.size());
@@ -85,8 +93,7 @@ void PhraseCheck::PositionsMatch::Reset(const CompiledPhrase& phrase,
     slot.clear();
   }
   _stop = std::numeric_limits<uint64_t>::max();
-  _anchor = phrase.anchor ? phrase.anchor->slot : 0;
-  _anchors = phrase.anchor ? anchors : 0;
+  _anchor_freq = phrase.anchor ? anchors : 0;
 }
 
 PhraseCheck::PhraseCheck(const CompiledPhrase& phrase,
@@ -94,20 +101,19 @@ PhraseCheck::PhraseCheck(const CompiledPhrase& phrase,
                          bool count)
   : _tokenizer{tokenizer()},
     _anchor{_analyzer.Batch()},
+    _positions{phrase},
     _state{.phrase = &phrase, .count = count},
-    _dense{!_tokenizer->Traits().explicit_pos} {
-  const std::span slots{phrase.slots};
-  _all_open = phrase.open && !slots.empty() &&
-              absl::c_all_of(slots.subspan(1), [](const auto& slot) {
-                return slot.offs_max == pos_limits::kOpenGap;
-              });
-}
+    _dense{!_tokenizer->Traits().explicit_pos},
+    _all_open{phrase.open &&
+              absl::c_all_of(std::span{phrase.slots}.subspan(1),
+                             [](const auto& slot) {
+                               return pos_limits::IsOpenGap(slot.offs_max);
+                             })},
+    _anchored{phrase.anchor && !(phrase.open && count) &&
+              !(_all_open && phrase.anchor->slot + 1 != phrase.slots.size())} {}
 
 PhraseVerdict PhraseCheck::Check(duckdb::idx_t row, uint32_t anchors) {
-  const auto& phrase = *_state.phrase;
-  Start(phrase.anchor && !(phrase.open && _state.count) &&
-          !(_all_open && phrase.anchor->right >= pos_limits::kOpenGap),
-        anchors);
+  Start(_anchored, anchors);
   Analyze(row);
   if (_route == Route::Anchor) {
     _anchor.Drain(_state);
@@ -403,7 +409,8 @@ void PhraseCheck::PositionsMatch::Feed(const TokenBatch& batch, uint32_t from,
       auto& slot_positions = _slots[slot];
       if (slot_positions.empty() || slot_positions.back() != pos) {
         slot_positions.emplace_back(pos);
-        if (slot == _anchor && slot_positions.size() == _anchors) {
+        if (slot_positions.size() == _anchor_freq &&
+            slot == state.phrase->anchor->slot) {
           _stop = uint64_t{pos} + state.phrase->anchor->right;
         }
       }
@@ -417,13 +424,7 @@ PhraseVerdict PhraseCheck::PositionsMatch::Finish(State& state) {
   if (absl::c_any_of(_slots, [](const auto& slot) { return slot.empty(); })) {
     return {};
   }
-  if (phrase.open) {
-    _gaps.clear();
-    for (const auto& slot : phrase.slots) {
-      _gaps.emplace_back(slot.offs_min, slot.offs_max);
-    }
-    const auto res =
-      detail::ordered::Run(_slots, _gaps, !state.count, _ordered);
+  const auto scaled = [&](const auto& res) -> PhraseVerdict {
     if (!res.any) {
       return {};
     }
@@ -434,22 +435,16 @@ PhraseVerdict PhraseCheck::PositionsMatch::Finish(State& state) {
       .freq = std::saturate_cast<uint32_t>(res.freq),
       .scale = static_cast<score_t>(res.weight / static_cast<double>(res.freq)),
     };
+  };
+  if (phrase.open) {
+    return scaled(
+      detail::open_gap::Run(_slots, _gaps, !state.count, _open_gap));
   }
   if (n > 1 && phrase.slop.max != 0) {
     detail::slop::SpanCursors cursors{_slots, _scratch};
-    const auto res =
+    return scaled(
       detail::slop::Sweep<0>(cursors, phrase.slop.offsets, phrase.slop.max,
-                             phrase.slop.pairs, _scratch, !state.count, [] {});
-    if (!res.any) {
-      return {};
-    }
-    if (!state.count) {
-      return {.freq = 1};
-    }
-    return {
-      .freq = std::saturate_cast<uint32_t>(res.freq),
-      .scale = static_cast<score_t>(res.weight / static_cast<double>(res.freq)),
-    };
+                             phrase.slop.pairs, _scratch, !state.count, [] {}));
   }
 
   _valid.clear();

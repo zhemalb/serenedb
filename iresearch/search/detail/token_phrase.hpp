@@ -31,7 +31,7 @@
 #include "iresearch/analysis/token_sinks.hpp"
 #include "iresearch/analysis/tokenizer.hpp"
 #include "iresearch/search/detail/compiled_phrase.hpp"
-#include "iresearch/search/detail/phrase_ordered_matcher.hpp"
+#include "iresearch/search/detail/phrase_open_gap_matcher.hpp"
 #include "iresearch/search/detail/phrase_slop_matcher.hpp"
 #include "iresearch/search/detail/row_values.hpp"
 #include "iresearch/search/filters/phrase_filter.hpp"
@@ -167,6 +167,8 @@ class PhraseCheck final : public TokenConsumer {
 
   class PositionsMatch {
    public:
+    explicit PositionsMatch(const CompiledPhrase& phrase);
+
     void Reset(const CompiledPhrase& phrase, uint32_t anchors);
     void Feed(const TokenBatch& batch, uint32_t from, State& state);
     PhraseVerdict Finish(State& state);
@@ -180,12 +182,11 @@ class PhraseCheck final : public TokenConsumer {
     std::vector<std::vector<PosAttr::value_t>> _slots;
     std::vector<Way> _valid;
     std::vector<Way> _next;
-    std::vector<detail::ordered::Gap> _gaps;
-    detail::ordered::Scratch _ordered;
+    std::vector<detail::open_gap::Gap> _gaps;
+    detail::open_gap::Scratch _open_gap;
     detail::slop::MatchScratch _scratch;
     uint64_t _stop = 0;
-    uint32_t _anchor = 0;
-    uint32_t _anchors = 0;
+    uint32_t _anchor_freq = 0;
   };
 
   decltype(auto) WithMatch(auto&& visit) {
@@ -216,7 +217,8 @@ class PhraseCheck final : public TokenConsumer {
   State _state;
   Route _route = Route::Anchor;
   bool _dense;
-  bool _all_open = false;
+  bool _all_open;
+  bool _anchored;
   uint32_t _last_pos = 0;
   uint32_t _value_base = 0;
   uint32_t _fed = 0;
