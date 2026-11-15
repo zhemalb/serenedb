@@ -289,44 +289,15 @@ IRS_FORCE_INLINE Result Match(Source& source, std::span<const Gap> gaps,
     return true;
   };
 
-  if (n == 2) {
-    Chain chain;
-    bool has_chain = false;
-    auto start = source.Next(0);
-    for (auto end = source.Next(1); !pos_limits::eof(end);
-         end = source.Next(1)) {
-      if (end < last.lo) {
-        continue;
-      }
-      const auto bound = end - last.lo;
-      for (; !pos_limits::eof(start) && start <= bound;
-           start = source.Next(0)) {
-        chain.end = start;
-        chain.start = start;
-        if constexpr (Offs) {
-          chain.start_offset = source.StartOffset(0);
-        }
-        if constexpr (HasBoost) {
-          chain.boost = source.Boost(0);
-        }
-        has_chain = true;
-      }
-      if (has_chain && Reaches(last, chain.end, end) && count(chain, end) &&
-          early_exit) {
-        break;
-      }
+  Walker<Source, Offs, HasBoost> walker{source, gaps, slots};
+  for (auto end = source.Next(n - 1); !pos_limits::eof(end);
+       end = source.Next(n - 1)) {
+    if (end < last.lo) {
+      continue;
     }
-  } else {
-    Walker<Source, Offs, HasBoost> walker{source, gaps, slots};
-    for (auto end = source.Next(n - 1); !pos_limits::eof(end);
-         end = source.Next(n - 1)) {
-      if (end < last.lo) {
-        continue;
-      }
-      const auto* chain = walker.LatestChain(n - 2, end);
-      if (chain && count(*chain, end) && early_exit) {
-        break;
-      }
+    const auto* chain = walker.LatestChain(n - 2, end);
+    if (chain && count(*chain, end) && early_exit) {
+      break;
     }
   }
   res.weight = weight;
